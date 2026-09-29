@@ -49,9 +49,9 @@ const optionalTunnelId = (settings: TunnelSettings, id: OptionalSurface): string
  * restarting the app, refreshing the connectors and using fresh chats all left it in place — so
  * three people reached this the long way before anybody suspected the configuration.
  *
- * Only a warning: the IDs are the user's to choose, a tunnel they deliberately share is their
- * business, and refusing to connect over it would be worse than a 50% failure they can now read
- * the reason for. Ids are never logged.
+ * Keep the warning so the log explains the rejected optional connector. The lifecycle guard below
+ * preserves the already-started connector and refuses to start a second client on the same ID,
+ * preventing deterministic cross-surface misrouting. IDs are never logged.
  */
 function warnOnSharedTunnelIds(settings: TunnelSettings): void {
   const named: Array<[SurfaceId, string]> = [
@@ -69,11 +69,22 @@ function warnOnSharedTunnelIds(settings: TunnelSettings): void {
     if (surfaces.length < 2) continue;
     logWarn(
       `connection: ${surfaces.join(' and ')} are configured on the same Secure Tunnel ID. ` +
-        'OpenAI dispatches round-robin across every client on one ID, so roughly one call in ' +
-        `${surfaces.length} will reach the wrong connector and come back as UNKNOWN_TOOL for a tool ` +
-        'that exists. Give each connector its own tunnel ID.'
+        'OpenAI would dispatch round-robin across multiple clients on one ID and can return ' +
+        'UNKNOWN_TOOL for a tool that exists. Duplicate optional connectors are not published; ' +
+        'give each connector its own tunnel ID.'
     );
   }
+}
+
+/** Returns the connector already owning an OpenAI Secure Tunnel ID, if any. */
+function tunnelIdOwner(id: OptionalSurface, tunnelId: string, settings: TunnelSettings): SurfaceId | null {
+  const wanted = tunnelId.trim();
+  if (!wanted) return null;
+  if ((settings.tunnelId ?? '').trim() === wanted) return 'core';
+  for (const [other, lifetime] of optionalTunnels) {
+    if (other !== id && lifetime.tunnelId.trim() === wanted) return other;
+  }
+  return null;
 }
 
 /** Core-affecting transport settings the current run actually started with. */
@@ -414,6 +425,16 @@ async function startOptionalTunnel(
     updateSurface(id, {
       state: 'off',
       detail: 'Not published yet. Create a separate Secure Tunnel for it and paste its tunnel id in Settings.'
+    });
+    return;
+  }
+  const owner = tunnelIdOwner(id, tunnelId, settings);
+  if (owner) {
+    const ownerLabel = owner === 'core' ? 'Core' : owner === 'desktop' ? 'Desktop' : 'Plugins';
+    updateSurface(id, {
+      state: 'error',
+      publicUrl: null,
+      detail: `Not published: this Secure Tunnel ID is already in use by the ${ownerLabel} connector. Give each connector its own tunnel ID.`
     });
     return;
   }

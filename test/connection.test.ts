@@ -175,9 +175,10 @@ describe('connection surface state', () => {
    * refreshing the connectors and opening fresh chats all left it in place — so three people
    * reached it the long way before anyone suspected the configuration.
    *
-   * A warning and not a refusal: the IDs are the user's to choose. And no ID is ever logged.
+   * Keep Core usable and refuse the duplicate optional client before OpenAI can round-robin it.
+   * The diagnostic still names the affected surfaces, but never the tunnel ID itself.
    */
-  it('warns when two connectors share one Secure Tunnel ID, and names both', async () => {
+  it('warns and refuses an optional connector that shares Core Secure Tunnel ID', async () => {
     mocks.config.tunnel.kind = 'openai';
     Object.assign(mocks.config.tunnel, { tunnelId: 'shared-id', pluginsTunnelId: 'shared-id', desktopTunnelId: '' });
     const connection = await import('../src/main/connection.js');
@@ -190,6 +191,12 @@ describe('connection surface state', () => {
       expect(said[0]).toContain('core and plugins');
       expect(said[0]).toContain('UNKNOWN_TOOL');
       expect(said[0], 'the tunnel ID itself was logged').not.toContain('shared-id');
+      expect(mocks.starts, 'the duplicate Plugins tunnel was still started').toBe(1);
+      expect(connection.getStatus().surfaces.find((surface) => surface.id === 'plugins')).toMatchObject({
+        state: 'error',
+        publicUrl: null,
+        detail: expect.stringContaining('Core connector')
+      });
     } finally {
       await connection.disconnect();
       Object.assign(mocks.config.tunnel, { tunnelId: '', pluginsTunnelId: '', desktopTunnelId: '' });
