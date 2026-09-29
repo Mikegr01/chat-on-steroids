@@ -108,4 +108,15 @@ if ($null -ne $launched) { if (!$launched.WaitForExit(3000)) { throw 'Owned PATH
 Write-Output 'APP_EXECUTABLE_VERIFIED'
 `)).toBe('APP_EXECUTABLE_VERIFIED');
   });
+
+  it('proves a launched console application cannot write into the helper protocol stdout', async () => {
+    expect(await run(String.raw`
+$executable=Join-Path $PSScriptRoot 'cos-noisy-app.exe'
+Add-Type -TypeDefinition 'public static class NoisyApp { public static void Main(string[] args) { System.Console.WriteLine("CHILD_STDOUT_CORRUPTION"); } }' -OutputAssembly $executable -OutputType ConsoleApplication
+$result=Launch-WindowsApp @{app=$executable}
+$launched=Get-Process -Id $result.processId -ErrorAction SilentlyContinue
+if ($null -ne $launched) { if (!$launched.WaitForExit(3000)) { throw 'Noisy app failed to exit' }; $launched.Dispose() }
+Write-Output '{"ok":true,"completed_count":1}'
+`)).toBe('{"ok":true,"completed_count":1}');
+  });
 });
