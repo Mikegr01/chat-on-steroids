@@ -6,7 +6,7 @@
     "message": "the app did not answer"
   },
   "content_app_not_running": {
-    "message": "Chat On Steroids is not running on this PC."
+    "message": "Chat On Steroids Custom is not running on this PC."
   },
   "content_auto_compaction": {
     "message": "Auto-compaction"
@@ -738,13 +738,13 @@
     "message": "Writing…"
   },
   "extension_action_title": {
-    "message": "Chat On Steroids"
+    "message": "Chat On Steroids Custom"
   },
   "extension_description": {
-    "message": "Connects ChatGPT to Chat On Steroids and controls browser tabs in the background with DOM, screenshots and developer tools."
+    "message": "Connects ChatGPT to Chat On Steroids Custom and controls browser tabs in the background with DOM, screenshots and developer tools."
   },
   "extension_name": {
-    "message": "Chat On Steroids companion"
+    "message": "Chat On Steroids Custom"
   },
   "popup_advanced": {
     "message": "Advanced"

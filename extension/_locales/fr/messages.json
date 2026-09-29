@@ -738,13 +738,13 @@
     "message": "Rédaction…"
   },
   "extension_action_title": {
-    "message": "Chat On Steroids"
+    "message": "Chat On Steroids Custom"
   },
   "extension_description": {
-    "message": "Connecte ChatGPT à Chat On Steroids et contrôle les onglets du navigateur en arrière-plan via le DOM, les captures d’écran et les outils de développement."
+    "message": "Connecte ChatGPT à Chat On Steroids Custom et contrôle les onglets du navigateur en arrière-plan via le DOM, les captures d’écran et les outils de développement."
   },
   "extension_name": {
-    "message": "Extension compagnon Chat On Steroids"
+    "message": "Extension compagnon Chat On Steroids Custom"
   },
   "popup_advanced": {
     "message": "Avancé"

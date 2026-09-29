@@ -738,13 +738,13 @@
     "message": "正在编写…"
   },
   "extension_action_title": {
-    "message": "Chat On Steroids"
+    "message": "Chat On Steroids Custom"
   },
   "extension_description": {
-    "message": "将 ChatGPT 连接到 Chat On Steroids，并通过 DOM、截图和开发者工具在后台控制浏览器标签页。"
+    "message": "将 ChatGPT 连接到 Chat On Steroids Custom，并通过 DOM、截图和开发者工具在后台控制浏览器标签页。"
   },
   "extension_name": {
-    "message": "Chat On Steroids 配套扩展"
+    "message": "Chat On Steroids Custom 配套扩展"
   },
   "popup_advanced": {
     "message": "高级"

@@ -132,6 +132,10 @@ const extensionManifest = JSON.parse(readFileSync(path.join(resourcesDir, 'exten
 if (extensionManifest.version !== expectedVersion) {
   throw new Error(`Packaged extension ${extensionManifest.version} does not match app ${expectedVersion}`);
 }
+const extensionEnMessages = JSON.parse(readFileSync(path.join(resourcesDir, 'extension', '_locales', 'en', 'messages.json'), 'utf8'));
+if (extensionEnMessages.extension_name?.message !== 'Chat On Steroids Custom') {
+  throw new Error(`Packaged extension name "${extensionEnMessages.extension_name?.message}" != "Chat On Steroids Custom"`);
+}
 const tunnelVersion = readFileSync(path.join(resourcesDir, 'tunnel', 'VERSION'), 'utf8').trim();
 const rgVersion = readFileSync(path.join(resourcesDir, 'rg', 'VERSION'), 'utf8').trim();
 if (tunnelVersion !== TUNNEL_CLIENT.version) throw new Error(`Packaged tunnel-client ${tunnelVersion} != ${TUNNEL_CLIENT.version}`);

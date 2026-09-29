@@ -48,6 +48,8 @@ const MODEL_REQUEST_TIMEOUT_MS = 190_000;
 const TIMED_OUT = 'the app took too long to answer';
 /** Bumped only when the request/response shape changes; the app compares it. */
 const BRIDGE_PROTOCOL = 14;
+/** The application identity the extension verifies during bridge discovery. */
+const BRIDGE_APP = 'chat-on-steroids-custom';
 /** Browser-owned presentation preferences also exposed by the popup. */
 const RENDER_STREAM_KEY = 'renderStreamEnabled';
 const SHOW_TIMES_KEY = 'showStreamTimes';
@@ -975,7 +977,7 @@ async function hello(candidate) {
     }, HELLO_TIMEOUT_MS);
     if (!response.ok) return null;
     const body = await response.json();
-    return body && body.app === 'chat-on-steroids' ? body : null;
+    return body && body.app === BRIDGE_APP ? body : null;
   } catch {
     return null;
   }
@@ -2864,7 +2866,7 @@ async function performBrowserRepairs(repairs, policy) {
         // Reported in #393 and measured on 2026-09-26. A page that answers that it is streaming
         // is alive; stand down and let the incident's next pass decide.
         const status = await tabReply(target.id, { type: 'clf-page-status' });
-        if (status?.ok === true && status.streaming === true) {
+        if (status?.ok === true && (status.streaming === true || status.securityOrAuthRequired)) {
           await call(`/status?repairFailed=${encodeURIComponent(token)}&repairAction=${repairAction}`);
           continue;
         }

@@ -1532,10 +1532,101 @@ var CLF_DOM = (() => {
    * recording "Chat On Steroids Desktop is now connected" as a ChatGPT failure.
    */
   const acknowledgedAccessNotices = new WeakSet();
+
+  /**
+   * Identifies whether ChatGPT is currently in an unauthenticated, security verification,
+   * challenge, checkpoint or access-denied state that requires human user resolution.
+   *
+   * Automation must never attempt to solve, bypass, or hide from these security controls.
+   * Detecting them allows the companion to stop automatic actions immediately, preserve
+   * pending drafts, and surface the condition for manual user attention.
+   */
+  function securityOrAuthRequired() {
+    return safe(() => {
+      const pathname = typeof location !== 'undefined' ? location.pathname : '';
+      const title = typeof document !== 'undefined' ? document.title : '';
+
+      // 1. Explicit auth/login routing
+      if (/^\/(?:auth\/|login(?:\/|$))/i.test(pathname)) {
+        return {
+          required: true,
+          reason: 'auth_required',
+          state: 'SECURITY_OR_AUTH_REQUIRED',
+          description: 'ChatGPT authentication or login is required.'
+        };
+      }
+
+      // 2. Checkpoint or security verification path
+      if (/^\/checkpoint(?:\/|$)/i.test(pathname)) {
+        return {
+          required: true,
+          reason: 'checkpoint_required',
+          state: 'SECURITY_OR_AUTH_REQUIRED',
+          description: 'ChatGPT security checkpoint verification is required.'
+        };
+      }
+
+      // 3. Cloudflare Turnstile / Challenge container or challenge iframe
+      const challengeNode = typeof document !== 'undefined'
+        ? document.querySelector(
+          '#challenge-stage, #challenge-form, .cf-turnstile, [data-challenge="turnstile"], ' +
+          'iframe[src*="challenges.cloudflare.com"], iframe[src*="cloudflare.com/cdn-cgi/challenge"]'
+        ) : null;
+      if (challengeNode && displayed(challengeNode)) {
+        return {
+          required: true,
+          reason: 'challenge_required',
+          state: 'SECURITY_OR_AUTH_REQUIRED',
+          node: challengeNode,
+          description: 'ChatGPT security challenge verification is presented.'
+        };
+      }
+
+      // 4. Cloudflare / Security interstitial page title
+      if (/^(?:just a moment\.\.\.|attention required! \| cloudflare)/i.test(title)) {
+        return {
+          required: true,
+          reason: 'challenge_required',
+          state: 'SECURITY_OR_AUTH_REQUIRED',
+          description: 'ChatGPT security verification interstitial is active.'
+        };
+      }
+
+      // 5. Cloudflare error / access denied block
+      const blockedNode = typeof document !== 'undefined'
+        ? document.querySelector('#cf-error-details, .cf-error-overview') : null;
+      if (blockedNode && displayed(blockedNode)) {
+        return {
+          required: true,
+          reason: 'access_blocked',
+          state: 'SECURITY_OR_AUTH_REQUIRED',
+          node: blockedNode,
+          description: 'ChatGPT access is currently restricted or blocked.'
+        };
+      }
+
+      return null;
+    }, null);
+  }
+
   function errors() {
     return safe(() => {
       const out = [];
       const texts = new Set();
+      const securityState = securityOrAuthRequired();
+      if (securityState) {
+        out.push({
+          text: securityState.description,
+          node: securityState.node || (typeof document !== 'undefined' ? document.body : null),
+          turnId: null,
+          recoverable: false,
+          blocking: true,
+          securityOrAuth: true,
+          reason: securityState.reason,
+          state: securityState.state
+        });
+        texts.add(securityState.description);
+      }
       // Live provider access throttling is a dialog, not a broken transport. Match
       // its semantic heading and notice together; quoted assistant prose is not it.
       for (const node of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
@@ -1657,6 +1748,7 @@ var CLF_DOM = (() => {
    */
   function composerSubmitReady() {
     return safe(() => {
+      if (securityOrAuthRequired()) return false;
       const box = composer();
       if (!composerWritable()) return false;
       if (generating() || stopButton()) return false;
@@ -2099,6 +2191,7 @@ var CLF_DOM = (() => {
       return false;
     };
     try {
+      if (securityOrAuthRequired()) return reject('security_or_auth_required');
       if (!box) return reject('composer_missing');
       const existing = (box.textContent || '').trim();
       if (value === '' && mode !== true) return false;
@@ -2168,6 +2261,7 @@ var CLF_DOM = (() => {
 
   async function send({ acceptanceTimeoutMs = 30000, stillCurrent = () => true, matchesUser = null, observeEvidence = null, clearAcceptedDraft = true, beforeSend = null, acceptUserReceipt = null } = {}) {
     try {
+      if (securityOrAuthRequired()) return false;
       const box = composer();
       if (!box || !box.isConnected || !stillCurrent() || generating() || stopButton()) return false;
       if (box.getAttribute('aria-disabled') === 'true' || box.getAttribute('contenteditable') === 'false') return false;
@@ -2925,6 +3019,7 @@ var CLF_DOM = (() => {
     replaceActivity,
     insertPrompt,
     clearPromptExact,
-    send
+    send,
+    securityOrAuthRequired
   };
 })();

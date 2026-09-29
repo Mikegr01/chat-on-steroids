@@ -14,6 +14,7 @@ import { WebSocket } from 'ws';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
+import { CUSTOM_APP_IDENTITY } from '../src/shared/app-identity.js';
 import { userPromptText } from '../src/shared/user-prompt.js';
 import { currentCoreInstructions } from '../src/main/mcp/instructions.js';
 import { browserControl } from '../src/main/browser-control.js';
@@ -529,7 +530,8 @@ describe('who is allowed to talk to it', () => {
   it('identifies itself to an extension without any credential', async () => {
     const reply = await request('GET', '/hello', { auth: null });
     expect(reply.status).toBe(200);
-    expect(reply.body.app).toBe('chat-on-steroids');
+    expect(reply.body.app).toBe(CUSTOM_APP_IDENTITY.bridgeAppId);
+    expect(reply.body.app).not.toBe('chat-on-steroids');
     // Against the constant, not a literal: what matters is that the handshake reports the
     // build's own version, and a hard-coded number here only ever fails on release day.
     expect(reply.body.version).toBe(APP_VERSION);

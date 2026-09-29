@@ -12325,6 +12325,7 @@
           // ChatGPT's own account that a response is streaming right now, as opposed to the
           // recorder's `generating`, which also holds while a turn waits on a local tool.
           streaming: CLF_DOM.generating(),
+          securityOrAuthRequired: CLF_DOM.securityOrAuthRequired ? CLF_DOM.securityOrAuthRequired() : null,
           recorderVersion: RECORDER_VERSION,
           runId: RUN_ID,
           conversationId,

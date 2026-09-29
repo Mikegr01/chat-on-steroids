@@ -11,7 +11,12 @@ export const CUSTOM_APP_IDENTITY = {
   artifactNameStem: 'Chat-On-Steroids-Custom-Setup',
   shortcutName: 'Chat On Steroids Custom',
   uninstallDisplayName: 'Chat On Steroids Custom',
-  autoUpdateEnabled: false
+  autoUpdateEnabled: false,
+  bridgeAppId: 'chat-on-steroids-custom',
+  extensionName: 'Chat On Steroids Custom',
+  extensionActionTitle: 'Chat On Steroids Custom',
+  extensionDescription: 'Connects ChatGPT to Chat On Steroids Custom and controls browser tabs in the background with DOM, screenshots and developer tools.',
+  extensionDirName: 'extension'
 } as const;
 
 export const OFFICIAL_APP_IDENTITY = {
@@ -22,5 +27,11 @@ export const OFFICIAL_APP_IDENTITY = {
   userDataDir: 'chat-on-steroids',
   artifactNameStem: 'Chat-On-Steroids-Setup',
   shortcutName: 'Chat On Steroids',
-  uninstallDisplayName: 'Chat On Steroids'
+  uninstallDisplayName: 'Chat On Steroids',
+  autoUpdateEnabled: true,
+  bridgeAppId: 'chat-on-steroids',
+  extensionName: 'Chat On Steroids companion',
+  extensionActionTitle: 'Chat On Steroids',
+  extensionDescription: 'Connects ChatGPT to Chat On Steroids and controls browser tabs in the background with DOM, screenshots and developer tools.',
+  extensionDirName: 'extension'
 } as const;
