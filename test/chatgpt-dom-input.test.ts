@@ -12,7 +12,7 @@ interface DomApi {
   temporaryChatReady(): boolean;
   confirmTemporaryChatIntroduction(): void;
   errors(): Array<{ text: string; recoverable: boolean; blocking?: boolean }>;
-  captureComposerDraft(text: string, current?: () => boolean): { current(): boolean; clear(): Promise<boolean>; dispose(): void; attachments(nodes: Element[]): void };
+  captureComposerDraft(text: string, current?: () => boolean): { current(): boolean; clear(): Promise<boolean>; dispose(): void; attachments(nodes: Element[]): void; node?: Element | null; touched?: () => boolean };
   visibleModelSelection(): { model: string; reasoningEffort?: string } | null;
   hasComposerAttachments(): boolean;
   stopGeneration(current: () => boolean): boolean;
@@ -657,6 +657,27 @@ describe('native image readiness', () => {
     if (reason === 'navigation') current = false;
     expect(await draft.clear()).toBe(false);
     expect(removed).not.toHaveBeenCalled(); expect(box.textContent).not.toBe(''); draft.dispose();
+  });
+  it('exposes the bound composer node and tracks trusted interactions on the lease', () => {
+    const host = document.querySelector('form')!;
+    let trustedListener!: (event: any) => void;
+    const originalAdd = host.addEventListener.bind(host);
+    host.addEventListener = (type: string, listener: any, options: any) => {
+      if (type === 'input' && options === true) trustedListener = listener;
+      originalAdd(type, listener, options);
+    };
+
+    const draft = api.captureComposerDraft('Exact prompt');
+    expect(draft.node).toBe(box);
+    expect(draft.touched?.()).toBe(false);
+
+    trustedListener({ isTrusted: false });
+    expect(draft.touched?.()).toBe(false);
+
+    trustedListener({ isTrusted: true });
+    expect(draft.touched?.()).toBe(true);
+
+    draft.dispose();
   });
   it.each(['Remove file:', 'Remove file 1:'])('waits for matching %s attachment and upload completion before Send', async (label) => {
     const input = upload();

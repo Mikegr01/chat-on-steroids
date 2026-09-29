@@ -11716,6 +11716,7 @@
     let decision = null;
     let sent = false;
     let draft = null;
+    let rebound = false;
     let claimedSilence = null;
     const writableComposer = () => CLF_DOM.composerVisible() && CLF_DOM.composerWritable() && CLF_DOM.composer();
     try {
@@ -11873,6 +11874,17 @@
         'Attachment upload was not confirmed. Check the unsent draft and any file error in ChatGPT before trying again.'
       ));
       await Promise.resolve();
+      if (input.recovery && !rebound && !sendAttempted && !draft.current() && !draft.touched?.() &&
+          onTarget() && epoch === forEpoch && !CLF_DOM.generating() && pendingTools === 0 &&
+          !input.attachments?.length && !input.images?.length && !CLF_DOM.hasComposerAttachments()) {
+        const replacement = CLF_DOM.composer();
+        if (replacement && draft.node && replacement !== draft.node && replacement.isConnected &&
+            sendText(replacement.textContent) === sendText(input.text)) {
+          draft.dispose();
+          draft = CLF_DOM.captureComposerDraft(input.text, () => sendAttempted ? sendingTarget() : onTarget());
+          rebound = true;
+        }
+      }
       if (!onTarget() || !draft.current() || sendText(CLF_DOM.composer()?.textContent) !== sendText(input.text)) return fail(t(
         'content_delivery_draft_preserved',
         'The composer changed; your draft was preserved'

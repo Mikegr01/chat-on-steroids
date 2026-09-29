@@ -722,6 +722,8 @@ var CLF_DOM = (() => {
     return {
       attachments(nodes) { if (same()) files = [...nodes]; },
       current: ownsAttachments,
+      node: box,
+      touched() { return touched; },
       async clear() {
         if (!ownsAttachments() || !host) return false;
         const current = [...host.querySelectorAll('button[aria-label]')].filter(node => composerFileName(node));

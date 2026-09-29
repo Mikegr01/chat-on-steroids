@@ -20550,4 +20550,159 @@ describe('ordinary Continue native recovery', () => {
     expect(stop).not.toHaveBeenCalled();
     expect(live.sent).toContainEqual(expect.objectContaining({ type: 'desktop_input', silenceBusyTurnId: 'source-turn' }));
   });
+
+  it('rebinds a pre-Send recovery draft lease when ChatGPT remounts the composer DOM node with identical text', async () => {
+    const progress = { role: 'assistant', messageId: 'native-progress', rawMessageId: 'native-progress',
+      stable: true, rawText: 'Inspecting the task.' };
+    live = await harness(`https://chatgpt.com/c/${chat}`, {
+      desktop_input: message => ({ ok: true, data: message.recoveryAction || message.authorize || message.ack || message.fail
+        ? { ok: true } : { input: { id, owner: 'input-owner', text, model: null, reasoningEffort: null,
+          recovery: { questionId: 'm-source', phase: 'ready' }, silenceBoundary: { turnId: 'source-turn' } } } })
+    });
+    userTurn(live.document, 'source', 'Complete the task');
+    const section = assistantTurn(live.document, 'native-answer', []);
+    live.hook.observe(); await settle();
+    await bindFiberTurns([{ section, turn: { turnId: 'native-answer', endMessageId: null, calls: [], messages: [progress] } }]);
+    const win = live.window as any;
+    win.setTimeout = (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms);
+    win.addEventListener('message', (event: any) => {
+      if (event.data?.source !== 'clf-fiber-ask') return;
+      const nonce = event.data.nonce;
+      section.setAttribute('data-clf-fiber-turn', `${nonce}:0`);
+      win.dispatchEvent(new win.MessageEvent('message', { source: win, data: {
+        source: 'clf-fiber-reply', nonce, scanToken: nonce, v: 21, scanOk: true, rows: [], turns: [{
+          index: 0, conversationId: chat, turnId: 'native-answer', endMessageId: null,
+          calls: [], activities: [], messages: [progress]
+        }]
+      } }));
+    });
+    const send = vi.fn(() => {
+      userTurn(live!.document, 'continued', text);
+      const cur = live!.document.querySelector('#prompt-textarea');
+      if (cur) cur.textContent = '';
+      live!.hook.observe();
+    });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', send);
+
+    const oldComposer = live.document.querySelector('#prompt-textarea')!;
+    let remounted = false;
+    new win.MutationObserver(() => {
+      if (remounted || !oldComposer.textContent?.includes('Continue until fully finished')) return;
+      remounted = true;
+      const replacement = oldComposer.cloneNode(true) as HTMLElement;
+      oldComposer.replaceWith(replacement);
+    }).observe(oldComposer, { childList: true, subtree: true, characterData: true });
+
+    const offer = { type: 'clf-desktop-input', id, conversationId: chat, silenceTurnId: 'source-turn',
+      recovery: { questionId: 'm-source', stop: false } };
+    const result = await live.runtimeMessage(offer);
+    expect(result, JSON.stringify(live.sent)).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(live.sent.filter(message => message.type === 'desktop_input' && message.authorize)).toHaveLength(1);
+    expect(live.sent.filter(message => message.type === 'desktop_input' && message.ack)).toHaveLength(1);
+  });
+
+  it.each([
+    'text-differs',
+    'trusted-edit',
+    'composer-attachments',
+    'input-attachments',
+    'route-change',
+    'new-final',
+    'already-authorized',
+    'non-recovery'
+  ] as const)('refuses to rebind recovery draft lease when safety boundary is broken (%s)', async scenario => {
+    let terminal = false;
+    const progress = { role: 'assistant', messageId: 'native-progress', rawMessageId: 'native-progress',
+      stable: true, rawText: 'Inspecting the task.' };
+    live = await harness(`https://chatgpt.com/c/${chat}`, {
+      desktop_input: message => {
+        if (message.authorize) {
+          if (scenario === 'already-authorized') {
+            const cur = live!.document.querySelector('#prompt-textarea')!;
+            const replacement = cur.cloneNode(true) as HTMLElement;
+            cur.replaceWith(replacement);
+          }
+          return { ok: true, data: { ok: true } };
+        }
+        if (message.recoveryAction || message.ack || message.fail) return { ok: true, data: { ok: true } };
+        const input: any = { id, owner: 'input-owner', text, model: null, reasoningEffort: null,
+          recovery: scenario === 'non-recovery' ? null : { questionId: 'm-source', phase: 'ready' },
+          silenceBoundary: { turnId: 'source-turn' } };
+        if (scenario === 'input-attachments') {
+          input.images = [{ name: 'app.png', dataUrl: 'data:image/png;base64,YQ==' }];
+        }
+        return { ok: true, data: { input } };
+      }
+    });
+
+    const host = live.document.querySelector('form')!;
+    const originalAdd = host.addEventListener.bind(host);
+    let trustedInputListener: ((event: any) => void) | null = null;
+    host.addEventListener = ((type: string, listener: any, options: any) => {
+      if (type === 'input' && options === true) trustedInputListener = listener;
+      originalAdd(type, listener, options);
+    }) as typeof host.addEventListener;
+
+    userTurn(live.document, 'source', 'Complete the task');
+    const section = assistantTurn(live.document, 'native-answer', []);
+    live.hook.observe(); await settle();
+    await bindFiberTurns([{ section, turn: { turnId: 'native-answer', endMessageId: null, calls: [], messages: [progress] } }]);
+    const win = live.window as any;
+    win.setTimeout = (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms);
+    win.addEventListener('message', (event: any) => {
+      if (event.data?.source !== 'clf-fiber-ask') return;
+      const nonce = event.data.nonce;
+      section.setAttribute('data-clf-fiber-turn', `${nonce}:0`);
+      win.dispatchEvent(new win.MessageEvent('message', { source: win, data: {
+        source: 'clf-fiber-reply', nonce, scanToken: nonce, v: 21, scanOk: true, rows: [], turns: [{
+          index: 0, conversationId: chat, turnId: 'native-answer',
+          endMessageId: (terminal || scenario === 'new-final') ? 'terminal-final' : null,
+          calls: [], activities: [], messages: [progress]
+        }]
+      } }));
+    });
+    const send = vi.fn(() => {
+      userTurn(live!.document, 'continued', text);
+      const cur = live!.document.querySelector('#prompt-textarea');
+      if (cur) cur.textContent = '';
+      live!.hook.observe();
+    });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', send);
+
+    if (scenario !== 'already-authorized') {
+      const oldComposer = live.document.querySelector('#prompt-textarea')!;
+      let remounted = false;
+      new win.MutationObserver(() => {
+        if (remounted || !oldComposer.textContent?.includes('Continue until fully finished')) return;
+        remounted = true;
+        if (scenario === 'trusted-edit' && trustedInputListener) {
+          trustedInputListener({ isTrusted: true });
+        }
+        const replacement = oldComposer.cloneNode(true) as HTMLElement;
+        if (scenario === 'text-differs') {
+          replacement.textContent = 'Modified recovery text';
+        }
+        oldComposer.replaceWith(replacement);
+        if (scenario === 'composer-attachments') {
+          const tile = live!.document.createElement('div');
+          tile.setAttribute('data-composer-attachments', '');
+          tile.innerHTML = '<div role="button" aria-label="doc.pdf"><button aria-label="Remove file 1: doc.pdf"></button></div>';
+          live!.document.querySelector('form')!.append(tile);
+        }
+        if (scenario === 'route-change') {
+          live!.dom.reconfigure({ url: 'https://chatgpt.com/c/different-chat-1234' });
+        }
+      }).observe(oldComposer, { childList: true, subtree: true, characterData: true });
+    }
+
+    const offer = { type: 'clf-desktop-input', id, conversationId: chat, silenceTurnId: 'source-turn',
+      recovery: scenario === 'non-recovery' ? undefined : { questionId: 'm-source', stop: false } };
+    const result = await live.runtimeMessage(offer);
+    expect(result).toEqual({ ok: false });
+    expect(send).not.toHaveBeenCalled();
+    if (scenario !== 'already-authorized') {
+      expect(live.sent.filter(message => message.type === 'desktop_input' && message.authorize)).toHaveLength(0);
+    }
+  });
 });
