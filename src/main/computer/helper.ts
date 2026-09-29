@@ -41,6 +41,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class Clf {
   [StructLayout(LayoutKind.Sequential)]
@@ -64,6 +65,7 @@ public static class Clf {
   // Nonzero when the user has swapped the primary and secondary mouse buttons. See ButtonFlags.
   const int SM_SWAPBUTTON = 23;
   const uint KEYEVENTF_EXTENDEDKEY = 0x0001, KEYEVENTF_KEYUP = 0x0002, KEYEVENTF_UNICODE = 0x0004;
+  const uint DESKTOP_READOBJECTS = 0x0001;
 
   [DllImport("user32.dll", SetLastError = true)]
   static extern uint SendInput(uint n, INPUT[] inputs, int size);
@@ -91,6 +93,9 @@ public static class Clf {
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr hDesktop);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr hDesktop);
 
   public struct POINT { public int X, Y; }
   public struct RECT { public int Left, Top, Right, Bottom; }
@@ -509,12 +514,45 @@ public static class Clf {
     return outW + "," + outH;
   }
 
-  public static string Capture(int x, int y, int w, int h, int maxW, string file) {
+  static string CaptureDirect(int x, int y, int w, int h, int maxW, string file) {
     using (Bitmap shot = new Bitmap(w, h))
     using (Graphics g = Graphics.FromImage(shot)) {
       g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
       return SavePng(shot, maxW, file);
     }
+  }
+
+  public static string Capture(int x, int y, int w, int h, int maxW, string file) {
+    IntPtr inputDesk = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+    if (inputDesk != IntPtr.Zero) {
+      Exception workerError = null;
+      string result = null;
+      try {
+        Thread worker = new Thread(() => {
+          try {
+            if (!SetThreadDesktop(inputDesk)) {
+              throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
+            EnsureDpiAware();
+            result = CaptureDirect(x, y, w, h, maxW, file);
+          } catch (Exception ex) {
+            workerError = ex;
+          }
+        });
+        worker.SetApartmentState(ApartmentState.STA);
+        worker.Start();
+        worker.Join();
+        if (workerError == null && result != null) return result;
+      } finally {
+        CloseDesktop(inputDesk);
+      }
+      try {
+        return CaptureDirect(x, y, w, h, maxW, file);
+      } catch {
+        throw workerError;
+      }
+    }
+    return CaptureDirect(x, y, w, h, maxW, file);
   }
 
 }
