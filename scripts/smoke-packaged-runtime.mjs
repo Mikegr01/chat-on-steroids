@@ -51,12 +51,14 @@ const nativeDir = `${targetPlatform}-${targetArch}`;
 let resourcesDir;
 let appExecutable;
 if (targetPlatform === 'darwin') {
-  const appBundle = path.join(packageRoot, 'Chat On Steroids.app');
+  const macApp = ['Chat On Steroids Custom.app', 'Chat On Steroids.app'].find((name) => existsSync(path.join(packageRoot, name))) ?? 'Chat On Steroids.app';
+  const appBundle = path.join(packageRoot, macApp);
   resourcesDir = path.join(appBundle, 'Contents', 'Resources');
-  appExecutable = path.join(appBundle, 'Contents', 'MacOS', 'Chat On Steroids');
+  appExecutable = path.join(appBundle, 'Contents', 'MacOS', path.basename(macApp, '.app'));
 } else {
   resourcesDir = path.join(packageRoot, 'resources');
-  appExecutable = path.join(packageRoot, targetPlatform === 'win32' ? 'Chat On Steroids.exe' : 'chat-on-steroids');
+  const winExecutable = ['Chat On Steroids Custom.exe', 'Chat On Steroids.exe'].find((name) => existsSync(path.join(packageRoot, name))) ?? 'Chat On Steroids Custom.exe';
+  appExecutable = path.join(packageRoot, targetPlatform === 'win32' ? winExecutable : 'chat-on-steroids');
 }
 
 function required(relative) {

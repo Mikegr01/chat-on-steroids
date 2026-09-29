@@ -369,7 +369,7 @@ describe('cross-platform packaging targets', () => {
     expect(builder.deb.depends).toContain('libatspi2.0-0 | libatspi2.0-0t64');
     expect(builder.linux.syncDesktopName).toBe(true);
     expect(builder.linux.maintainer).toMatch(/^Chat On Steroids <[^>]+@users\.noreply\.github\.com>$/);
-    expect(pkg.desktopName).toBe('com.chatonsteroids.app.desktop');
+    expect(pkg.desktopName).toBe('com.chatonsteroids.custom.desktop');
     expect(pkg.homepage).toBe('https://github.com/totec448-spec/chat-on-steroids');
     expect(iconScript).toContain("build', 'icon.png'), pngFor(1024)");
 

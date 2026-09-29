@@ -69,7 +69,8 @@ import {
   type ContinuationSnapshot
 } from './session/continuation.js';
 import { runShutdownSequence } from './shutdown.js';
-import { applyStagedUpdate, startUpdateChecks } from './update.js';
+import { applyStagedUpdate } from './update.js';
+import { configureAppIdentity } from './app-identity.js';
 import { UI_BASE_ZOOM, windowLayoutForWorkArea, titleBarOverlayForTheme, windowBackgroundForTheme } from './window-layout.js';
 import { openInPreferredBrowser } from './browser.js';
 import {
@@ -95,6 +96,9 @@ let quitting = false;
 let shutdownStarted = false;
 let shutdownComplete = false;
 const usageWarmup = new AbortController();
+
+// Configure custom identity and isolated userData before acquiring single-instance lock.
+configureAppIdentity();
 
 // One instance only: two copies would fight over the tunnel and the config file.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -494,11 +498,8 @@ void app.whenReady().then(async () => {
   }
   if (getConfig().ui.autoConnect) void connect();
 
-  // Never awaited: an unreachable GitHub, a slow download or a broken release must not delay a
-  // window that is already on screen. Everything it learns arrives through the ordinary state
-  // push, every failure ends inside it, and its own timer keeps it running for a tray app that
-  // is never restarted.
-  startUpdateChecks();
+  // Custom build disables automatic upstream update checks so it does not pull or stage
+  // official upstream releases over this custom installation. Custom update channels can be added later.
   // Warm the existing derived cache once, after startup, without delaying the UI.
   // A visit to Usage joins this same calculation; unchanged recordings cost no reads.
   void usageOverview(usageWarmup.signal).catch((error: Error) => {
