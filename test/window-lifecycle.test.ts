@@ -71,6 +71,73 @@ describe('native window activation', () => {
     ready();
     expect(showWindow).toHaveBeenCalledTimes(2);
   });
+
+  it('recreates the window when the previous window is absent or destroyed', () => {
+    const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const present = source
+      .slice(
+        source.indexOf('function showWindow()'),
+        source.indexOf('\nsetFinishNotifier(', source.indexOf('function showWindow()'))
+      )
+      .replace('function showWindow(): void', 'function showWindow()');
+
+    // Case 1: destroyed window reference must trigger recreation instead of throwing
+    const createWindowDestroyed = vi.fn();
+    const destroyedContext = vm.createContext({
+      window: {
+        isDestroyed: () => true,
+        isMinimized: () => {
+          throw new Error('Object has been destroyed');
+        },
+        restore: vi.fn(),
+        show: vi.fn(),
+        focus: vi.fn()
+      },
+      quitting: false,
+      createWindow: createWindowDestroyed
+    });
+    vm.runInContext(present + '\nshowWindow();', destroyedContext);
+    expect(createWindowDestroyed).toHaveBeenCalledOnce();
+
+    // Case 2: absent window reference (null) must trigger recreation
+    const createWindowAbsent = vi.fn();
+    const absentContext = vm.createContext({
+      window: null,
+      quitting: false,
+      createWindow: createWindowAbsent
+    });
+    vm.runInContext(present + '\nshowWindow();', absentContext);
+    expect(createWindowAbsent).toHaveBeenCalledOnce();
+
+    // Case 3: healthy alive window must be shown/focused, not recreated
+    const operations: string[] = [];
+    const healthyWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      restore: vi.fn(),
+      show: vi.fn(() => operations.push('show')),
+      focus: vi.fn(() => operations.push('focus'))
+    };
+    const healthyCreateWindow = vi.fn();
+    const healthyContext = vm.createContext({
+      window: healthyWindow,
+      quitting: false,
+      createWindow: healthyCreateWindow
+    });
+    vm.runInContext(present + '\nshowWindow();', healthyContext);
+    expect(healthyCreateWindow).not.toHaveBeenCalled();
+    expect(operations).toEqual(['show', 'focus']);
+
+    // Case 4: quitting process must neither recreate nor show
+    const quittingCreateWindow = vi.fn();
+    const quittingContext = vm.createContext({
+      window: null,
+      quitting: true,
+      createWindow: quittingCreateWindow
+    });
+    vm.runInContext(present + '\nshowWindow();', quittingContext);
+    expect(quittingCreateWindow).not.toHaveBeenCalled();
+  });
   it('passively observes on first visible use without opening a browser, never on repeat show or quit', async () => {
     const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const listener = source.slice(source.indexOf("  window.on('show'"), source.indexOf("  window.once('ready-to-show'"));

@@ -225,13 +225,18 @@ function showWindow(): void {
   // below additionally protects the long pre-window startup interval, while this invariant makes
   // a direct caller harmless once `before-quit` has started.
   if (quitting) return;
-  if (!window) {
+  if (typeof logInfo === 'function') logInfo('activation requested');
+  const destroyed = Boolean(window?.isDestroyed?.());
+  if (!window || destroyed) {
+    if (typeof logInfo === 'function') logInfo(!window ? 'window absent' : 'window destroyed');
     createWindow();
+    if (typeof logInfo === 'function') logInfo('window recreated');
     return;
   }
   if (window.isMinimized()) window.restore();
   window.show();
   window.focus();
+  if (typeof logInfo === 'function') logInfo('window shown/focused');
 }
 
 setFinishNotifier((title, body, sessionId, turnId) => {
