@@ -44,6 +44,7 @@
         <div class="sidebar-primary" id="sidebarPrimary">
           <button class="btn new-chat" id="newChat" type="button"><i class="ico ph ph-pencil-simple" aria-hidden="true"></i>New chat</button>
           <button class="btn sidebar-primary-link" id="sidebarPlugins" data-sidebar-page="plugins" type="button"><i class="ico ph ph-puzzle-piece" aria-hidden="true"></i>Plugins</button>
+          <button class="btn sidebar-primary-link" id="sidebarDiagnostics" data-sidebar-page="diagnostics" type="button"><i class="ico ph ph-activity" aria-hidden="true"></i>Diagnostics</button>
           <button class="btn sidebar-primary-link" id="sidebarSkills" data-sidebar-page="skills" type="button"><i class="ico ph ph-cube" aria-hidden="true"></i>Skills</button>
           <button class="btn sidebar-primary-link" id="sidebarPets" data-sidebar-page="pets" type="button"><i class="ico ph ph-paw-print" aria-hidden="true"></i>Pets</button>
         </div>
@@ -271,6 +272,33 @@
           <div class="plugin-section-head"><h2>Explore plugins</h2><span class="muted">Made for your workflow</span></div>
           <div id="pluginsExplore" class="plugin-directory"></div>
           <details class="plugin-legal"><summary><svg class="disclosure-chevron details-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 3.5 10.5 8 6 12.5"></path></svg>Legal Notices / Third-party Licenses</summary><p>Catalog illustrations are original Chat On Steroids artwork, Copyright © 2026 Chat On Steroids contributors, licensed under the app’s MIT license. They illustrate independent integrations and are not official product logos or endorsements. Product names belong to their respective owners.</p><p>Installed plugins retain their own licenses. Open a plugin’s details to see its source, version and license. Review the upstream project before installation. Bundled dependency notices and reviewed catalog license texts are included in THIRD-PARTY-NOTICES.txt with the application; external plugins are downloaded separately.</p><button class="btn" id="pluginsLegalOpen" type="button">Open full third-party license texts</button></details>
+          </div>
+        </section>
+        <section class="panel plugins-panel diagnostics-panel" data-panel="diagnostics">
+          <div class="plugins-content diagnostics-content">
+            <header class="plugin-page-head diagnostics-head">
+              <div><h1>System Diagnostics</h1><p>Authoritative health from the main process, with safe checks you run explicitly.</p></div>
+              <div class="diagnostics-actions">
+                <button class="btn btn-solid" id="diagnosticsRun" type="button">Run Health Check</button>
+                <button class="btn" id="diagnosticsRecheck" type="button">Recheck</button>
+                <button class="btn" id="diagnosticsOpenChatGPT" type="button">Open ChatGPT Plugins</button>
+                <button class="btn" id="diagnosticsCopy" type="button">Copy diagnostics</button>
+                <button class="btn" id="diagnosticsLogs" type="button">Open logs</button>
+              </div>
+            </header>
+            <p class="plugin-error" id="diagnosticsError" role="alert" hidden></p>
+            <section class="diagnostics-overall" aria-labelledby="diagnosticsOverallTitle">
+              <div><span class="diagnostics-kicker">Overall</span><h2 id="diagnosticsOverallTitle">Loading health…</h2><p id="diagnosticsOverallSummary">Reading cached system health.</p></div>
+              <span class="diagnostics-state" id="diagnosticsOverallState">UNKNOWN</span>
+            </section>
+            <div class="diagnostics-grid">
+              <section class="diagnostics-card" aria-labelledby="diagnosticsApplicationTitle"><h2 id="diagnosticsApplicationTitle">Application</h2><div id="diagnosticsApplication"></div></section>
+              <section class="diagnostics-card" aria-labelledby="diagnosticsConnectionsTitle"><h2 id="diagnosticsConnectionsTitle">Connections</h2><div id="diagnosticsConnections"></div></section>
+              <section class="diagnostics-card" aria-labelledby="diagnosticsAutomationTitle"><h2 id="diagnosticsAutomationTitle">Automation</h2><div id="diagnosticsAutomation"></div></section>
+              <section class="diagnostics-card diagnostics-wide" aria-labelledby="diagnosticsPluginsTitle"><h2 id="diagnosticsPluginsTitle">Plugins</h2><div id="diagnosticsPlugins"></div></section>
+              <section class="diagnostics-card" aria-labelledby="diagnosticsEnvironmentTitle"><h2 id="diagnosticsEnvironmentTitle">Environment</h2><div id="diagnosticsEnvironment"></div></section>
+              <section class="diagnostics-card" aria-labelledby="diagnosticsRecentTitle"><h2 id="diagnosticsRecentTitle">Recent results</h2><div id="diagnosticsRecent"></div></section>
+            </div>
           </div>
         </section>
         <section class="panel plugins-panel skills-panel" data-panel="skills">

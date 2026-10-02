@@ -22,6 +22,7 @@ import type {
   BlenderAddonInstallResult,
   BlenderAddonEnableResult,
 } from '../shared/plugins.js';
+import type { SystemHealthSnapshot } from '../shared/diagnostics.js';
 /**
  * The entire renderer-facing API.
  *
@@ -212,6 +213,10 @@ const api = {
   connect: () => call<AppState>('connection:connect'),
   disconnect: () => call<AppState>('connection:disconnect'),
   runDiagnostics: () => call<Diagnosis>('diagnostics:run'),
+  diagnosticsSnapshot: (runActiveProbes?: boolean) => call<SystemHealthSnapshot>('diagnostics:snapshot', { runActiveProbes }),
+  diagnosticsRunHealthCheck: () => call<SystemHealthSnapshot>('diagnostics:runChecks'),
+  diagnosticsCopyReport: () => call<string>('diagnostics:copyReport'),
+  diagnosticsOpenLogs: () => call<void>('diagnostics:openLogs'),
   requestDesktopAccessibility: () => call<AppState>('desktop:requestAccessibility'),
   getLog: () => call<LogEntry[]>('log:get'),
   getLogText: () => call<string>('log:text'),

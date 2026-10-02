@@ -7,6 +7,7 @@ import { surfaceDefinition } from './mcp/surfaces.js';
 import { APP_VERSION } from './version.js';
 import { PLUGIN_MAX_TOOLS } from './plugins/exposure.js';
 import type { PluginPublication, PluginRefreshRequest, PluginSurface, PluginToolSchema } from '../shared/plugin-refresh.js';
+import type { ConnectorSchemaState } from '../shared/diagnostics.js';
 
 const app = z.string().regex(/^asdk_app_[a-zA-Z0-9_-]{1,160}$/);
 const LEGACY_PLUGIN_MAX_TOOLS = 64;
@@ -270,3 +271,125 @@ export function failPluginRefresh(input: { id: string; error: string }): Promise
 /** Tests that are not about tunnel timing publish surfaces as if their tunnel were long live. */
 export function setPluginRefreshTunnelGraceForTests(ms: number): void { tunnelGraceMs = ms; }
 export function resetPluginRefreshForTests(): void { for (const row of settling.values()) if (row.timer) clearTimeout(row.timer); settling.clear(); publications.clear(); chain = Promise.resolve(); }
+
+export interface SurfaceRefreshDiagnostics {
+  surface: PluginSurface;
+  published: boolean;
+  schemaId: string | null;
+  toolCount: number;
+  completedSchemaId: string | null;
+  appId: string | null;
+  attempted: boolean;
+  manual: boolean;
+  parked: boolean;
+  failures: number;
+  error?: string;
+  isSettling: boolean;
+  settlingReadyAt?: number;
+  connectorSchemaState: ConnectorSchemaState;
+}
+
+export function getSurfaceRefreshDiagnostics(): Promise<Record<PluginSurface, SurfaceRefreshDiagnostics>> {
+  return serial(async () => {
+    const currentRows = await rows();
+    const surfaces: readonly PluginSurface[] = ['core', 'desktop', 'plugins'];
+    const result: Record<PluginSurface, SurfaceRefreshDiagnostics> = {
+      core: {
+        surface: 'core',
+        published: false,
+        schemaId: null,
+        toolCount: 0,
+        completedSchemaId: null,
+        appId: null,
+        attempted: false,
+        manual: false,
+        parked: false,
+        failures: 0,
+        isSettling: false,
+        connectorSchemaState: 'LOCAL_RUNTIME_READY',
+      },
+      desktop: {
+        surface: 'desktop',
+        published: false,
+        schemaId: null,
+        toolCount: 0,
+        completedSchemaId: null,
+        appId: null,
+        attempted: false,
+        manual: false,
+        parked: false,
+        failures: 0,
+        isSettling: false,
+        connectorSchemaState: 'LOCAL_RUNTIME_READY',
+      },
+      plugins: {
+        surface: 'plugins',
+        published: false,
+        schemaId: null,
+        toolCount: 0,
+        completedSchemaId: null,
+        appId: null,
+        attempted: false,
+        manual: false,
+        parked: false,
+        failures: 0,
+        isSettling: false,
+        connectorSchemaState: 'LOCAL_RUNTIME_READY',
+      },
+    };
+
+    for (const surface of surfaces) {
+      const pub = publications.get(surface);
+      const row = currentRows.find((r) => r.surface === surface);
+      const isPublished = Boolean(pub);
+      const schemaId = pub?.schemaId ?? null;
+      const toolCount = pub?.tools.length ?? 0;
+      const settlingInfo = settling.get(surface);
+      const isSettling = Boolean(settlingInfo && settlingInfo.readyAt > Date.now());
+      const attempted = row?.attempted ?? false;
+      const manual = row?.manual ?? false;
+      const parked = row?.parked ?? false;
+      const failures = row?.failures ?? 0;
+      const error = row?.error;
+      const appId = row?.appId ?? null;
+      const completedSchemaId = row?.completedSchemaId ?? null;
+
+      let connectorSchemaState: ConnectorSchemaState;
+      if (!isPublished) {
+        connectorSchemaState = 'LOCAL_RUNTIME_READY';
+      } else if (isSettling) {
+        connectorSchemaState = 'CHATGPT_REFRESH_PENDING';
+      } else if (manual) {
+        connectorSchemaState = 'CHATGPT_REFRESH_REQUIRED';
+      } else if (attempted && completedSchemaId !== schemaId) {
+        connectorSchemaState = 'CHATGPT_REFRESH_PENDING';
+      } else if (completedSchemaId === schemaId) {
+        connectorSchemaState = 'CHATGPT_SCHEMA_CURRENT';
+      } else if (completedSchemaId && completedSchemaId !== schemaId) {
+        connectorSchemaState = 'CHATGPT_REFRESH_REQUIRED';
+      } else if (appId) {
+        connectorSchemaState = 'CHATGPT_REFRESH_REQUIRED';
+      } else {
+        connectorSchemaState = 'CHATGPT_SCHEMA_UNKNOWN';
+      }
+
+      result[surface] = {
+        surface,
+        published: isPublished,
+        schemaId,
+        toolCount,
+        completedSchemaId,
+        appId,
+        attempted,
+        manual,
+        parked,
+        failures,
+        ...(error ? { error } : {}),
+        isSettling,
+        ...(settlingInfo ? { settlingReadyAt: settlingInfo.readyAt } : {}),
+        connectorSchemaState,
+      };
+    }
+    return result;
+  });
+}

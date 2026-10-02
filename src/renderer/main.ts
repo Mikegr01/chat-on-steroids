@@ -4,6 +4,7 @@ import { paintPluginRefreshReminder } from './plugin-refresh-reminder.js';
 import { initUsage, refreshUsage } from './usage.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { initPlugins, applyPluginsState } from './plugins.js';
+import { bindDiagnosticsNavigation, initDiagnostics } from './diagnostics.js';
 import { initBrowserPreferences } from './browser-preferences.js';
 import { initConnectionAdvanced } from './connection-popover.js';
 import { initSetupGuide } from './setup-guide.js';
@@ -133,10 +134,11 @@ let setupKeySave: Promise<boolean> = Promise.resolve(true);
 // ------------------------------------------------------------------- tabs
 
 let openSkillsLibrary: () => void = () => undefined;
+let refreshDiagnostics: () => Promise<void> = async () => undefined;
 
 function showTab(name: string): void {
   if (name === 'skills') openSkillsLibrary();
-  const library = name === 'plugins' || name === 'skills' || name === 'pets';
+  const library = name === 'plugins' || name === 'skills' || name === 'pets' || name === 'diagnostics';
   const settings = name !== 'chat' && !library;
   document.querySelector<HTMLElement>('.app')!.dataset.screen = library ? 'library' : settings ? 'settings' : 'chat';
   document.querySelector<HTMLElement>('.sidebar-brand')!.hidden = settings;
@@ -144,6 +146,7 @@ function showTab(name: string): void {
   $('workspaceSettings').hidden = false;
   $('workspaceSettings').classList.toggle('is-sel', settings);
   if (name === 'usage') void refreshUsage();
+  if (name === 'diagnostics') void refreshDiagnostics();
   $('tabs').hidden = !settings;
   $('backToChat').hidden = !settings;
   document.querySelector<HTMLElement>('.sidebar-sessions')!.hidden = settings;
@@ -207,6 +210,7 @@ $('sessionList').addEventListener('click', event => {
 }, { capture: true });
 $('newChat').addEventListener('click', () => showTab('chat'));
 $('sidebarPlugins').addEventListener('click', () => showTab('plugins'));
+bindDiagnosticsNavigation(showTab);
 $('sidebarPets').addEventListener('click', () => showTab('pets'));
 $('sidebarSkills').addEventListener('click', () => showTab('skills'));
 $('viewPets').addEventListener('click', () => { ($('viewMenu') as HTMLDetailsElement).open = false; pet.toggle(); });
@@ -2069,6 +2073,7 @@ buildGroups();
 initSidebarResize();
 initUsage();
 initPlugins(apply);
+refreshDiagnostics = initDiagnostics(api);
 initPets(api, pet);
 openSkillsLibrary = initSkillsLibrary(api);
 initBrowserPreferences();

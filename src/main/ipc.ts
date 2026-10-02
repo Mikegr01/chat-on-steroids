@@ -43,6 +43,7 @@ import { pluginRefreshPublications } from './plugin-refresh.js';
  * key but can never read it back.
  */
 
+import path from 'node:path';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import { z } from 'zod';
 import {
@@ -63,6 +64,8 @@ import { bridgePortSelection } from './bridge-ports.js';
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runDiagnostics } from './diagnostics.js';
+import { getSystemHealthSnapshot, runSystemHealthCheck, generateSanitizedDiagnosticsReport } from './system-diagnostics.js';
+import { resolveCustomUserData } from './app-identity.js';
 import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, onLog } from './logger.js';
 import { RESERVED_ROOT_NAMES, uniqueRootName, validateNewRoot, SandboxError, resolvePath } from './sandbox.js';
 import { addProject, getSessionProject, listProjects, projectWorkspace, removeProject } from './projects.js';
@@ -948,6 +951,23 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   });
 
   handle('diagnostics:run', async () => runDiagnostics());
+  handle('diagnostics:snapshot', async (payload) => {
+    const parsed = z.object({ runActiveProbes: z.boolean().optional() }).optional().parse(payload ?? {});
+    return getSystemHealthSnapshot(parsed);
+  });
+  handle('diagnostics:runChecks', async () => runSystemHealthCheck());
+  handle('diagnostics:copyReport', async () => {
+    const snapshot = await getSystemHealthSnapshot({ runActiveProbes: false });
+    const report = generateSanitizedDiagnosticsReport(snapshot);
+    await clipboard.writeText(report);
+    return report;
+  });
+  handle('diagnostics:openLogs', async () => {
+    const userData = resolveCustomUserData();
+    const logPath = path.join(userData, 'app.log');
+    const error = await shell.openPath(logPath);
+    if (error) shell.showItemInFolder(logPath);
+  });
   handle('desktop:requestAccessibility', async () => {
     await refreshMacOSDesktopAccess({ promptAccessibility: true });
     return buildState();
