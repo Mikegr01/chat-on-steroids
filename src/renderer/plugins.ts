@@ -157,6 +157,8 @@ function renderInstalled(): void {
   // Keep an open detail view on the same plugin after a tool or status change.
   const detail = document.querySelector<HTMLElement>('#pluginDialog [data-plugin-detail]');
   if (detail) { const current = snapshot.plugins.find(plugin => plugin.id === detail.dataset.pluginDetail); if (current) renderPluginTools(detail, current); }
+  const blenderSection = document.querySelector<HTMLElement>('#pluginDialog [data-plugin-blender]');
+  if (blenderSection) { const current = snapshot.plugins.find(plugin => plugin.id === blenderSection.dataset.pluginBlender); if (current) renderBlenderIntegration(blenderSection, current); }
 }
 /** Installation identity, not enabled state or a user-edited display name, owns catalog membership. */
 function availableRecipes(): PluginCatalogEntry[] {
@@ -210,6 +212,109 @@ function renderPluginTools(parent: HTMLElement, plugin: PluginView): void {
     }
     parent.append(tools);
 }
+function renderBlenderIntegration(parent: HTMLElement, plugin: PluginView): void {
+  parent.replaceChildren();
+  const panel = el('div', 'blender-integration-panel');
+  panel.append(el('h3', '', () => t("Blender Integration & Setup")));
+
+  const grid = el('div', 'blender-status-grid');
+
+  const addRow = (label: string, value: string) => {
+    const row = el('div', 'blender-status-item');
+    row.append(el('span', 'blender-status-label', label), el('span', 'blender-status-val', value));
+    grid.append(row);
+  };
+
+  const report = plugin.blender;
+  const isReady = report?.code === 'READY';
+  const exePath = report?.installation?.executablePath ?? plugin.config.blenderPath;
+  const ver = report?.installation?.version ?? (isReady ? t("Verified connection") : (exePath ? t("Configured") : t("Not detected yet")));
+  const compat = report?.installation?.compatibility ? ` (${report.installation.compatibility === 'SUPPORTED' ? t("Supported") : report.installation.compatibility})` : '';
+
+  addRow(t("Blender"), `${ver}${compat}${exePath ? ` · ${exePath}` : ''}`);
+
+  const addonState = report?.addon?.installed
+    ? t("Installed (protocol v{0}){1}", [report.addon.protocolVersion ?? '?', report.addon.needsUpdate ? t(" · update needed") : t(" · up to date")])
+    : isReady
+      ? t("Verified connection")
+      : t("Not installed");
+  addRow(t("Add-on"), addonState);
+
+  const serverState = report?.server?.listening
+    ? t("Running on port {0} (PID {1})", [report.server.port, report.server.owningPid ?? '?'])
+    : isReady
+      ? t("Verified connection")
+      : t("Not running");
+  const mcpState = plugin.status === 'ready' ? t("Connected") : plugin.status === 'connecting' ? t("Connecting…") : t("Disconnected");
+  addRow(t("Connection"), `${t("Server")}: ${serverState} · MCP: ${mcpState}`);
+
+  panel.append(grid);
+
+  if (report?.actionRequired) {
+    const guidance = el('div', 'blender-guidance-box');
+    guidance.append(el('strong', '', () => t("Action required: ")), el('span', '', report.actionRequired));
+    panel.append(guidance);
+  }
+
+  const actions = el('div', 'blender-actions');
+  actions.append(button(() => t("Detect Blender"), async () => {
+    const list = await run(window.api.blenderDetect());
+    if (list && list.length) {
+      toast(t("Found {0} Blender installation(s): {1}", [list.length, list.map(b => b.version).join(', ')]));
+    } else {
+      toast(t("No Blender installations automatically discovered."));
+    }
+    await run(window.api.blenderDiagnose());
+    await refreshPlugins();
+  }));
+
+  const needsInstall = !isReady && !report?.addon?.installed;
+  const needsRepair = report?.addon?.needsUpdate;
+  if (needsInstall || needsRepair) {
+    actions.append(button(() => needsRepair ? t("Repair Add-on") : t("Install Add-on"), async () => {
+      const res = await run(window.api.blenderInstallAddon(exePath));
+      if (res) {
+        if (res.success) toast(res.message);
+        else toast(t("Install failed: {0}", [res.message]));
+      }
+      await run(window.api.blenderDiagnose(exePath));
+      await refreshPlugins();
+    }, true));
+  }
+
+  if (report?.code === 'ADDON_DISABLED') {
+    actions.append(button(() => t("Enable Add-on"), async () => {
+      const res = await run(window.api.blenderEnableAddon(exePath));
+      if (res) {
+        if (res.success) toast(res.message);
+        else toast(t("Enable failed: {0}", [res.message]));
+      }
+      await run(window.api.blenderDiagnose(exePath));
+      await refreshPlugins();
+    }, true));
+  }
+
+  actions.append(button(() => t("Open Blender"), async () => {
+    const res = await run(window.api.blenderOpen(exePath));
+    if (res && !res.success) toast(res.error || t("Could not open Blender"));
+  }));
+
+  actions.append(button(() => t("Recheck"), async () => {
+    await run(window.api.blenderDiagnose(exePath));
+    await refreshPlugins();
+    toast(t("Blender health rechecked."));
+  }));
+
+  if (plugin.enabled) {
+    actions.append(button(() => t("Restart MCP"), async () => {
+      await mutate(window.api.pluginsRestart(plugin.id));
+    }));
+  }
+
+  panel.append(actions);
+  parent.append(panel);
+}
+
 function showPlugin(plugin: PluginView): void {
   const recipe = snapshot.catalog.find(entry => entry.id === plugin.catalogId);
   const { body } = dialog(plugin.name);
@@ -225,6 +330,15 @@ function showPlugin(plugin: PluginView): void {
     intro.append(meta);
   }
   hero.append(art(recipe?.icon ?? plugin.catalogId ?? 'custom'), intro); body.append(hero);
+  if (plugin.catalogId === 'blender') {
+    const blenderSection = el('div');
+    blenderSection.dataset.pluginBlender = plugin.id;
+    renderBlenderIntegration(blenderSection, plugin);
+    body.append(blenderSection);
+    if (!plugin.blender) {
+      void run(window.api.blenderDiagnose()).then(refreshPlugins);
+    }
+  }
   const tools = el('section', 'plugin-detail-tools'); tools.dataset.pluginDetail = plugin.id; renderPluginTools(tools, plugin); body.append(tools);
   const about = document.createElement('details'); about.className = 'plugin-about'; about.append(el('summary', '', () => t("About this plugin")));
   about.append(el('p', 'plugin-source', plugin.source.url ?? plugin.source.package ?? plugin.source.command ?? plugin.source.kind), el('p', 'muted', () => `${plugin.version || t("Custom version")} · ${plugin.license || t("License not supplied")}`), el('p', '', () => t("Runs while installed and enabled, including after reopening the app. Disable or uninstall it to stop its connection. Restart reconnects and refreshes its tools.")));

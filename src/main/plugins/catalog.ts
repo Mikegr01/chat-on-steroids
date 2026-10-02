@@ -5,7 +5,7 @@ export const pluginCatalog: PluginCatalogEntry[] = [
   {
     id: 'blender',
     name: 'Blender MCP',
-    description: 'Create and inspect 3D scenes through the community Blender addon.',
+    description: 'Inspect 3D scenes and create objects through Blender MCP. Includes high-trust Python script execution.',
     category: '3d-editor',
     maintainer: 'ahujasid',
     tier: 'specialist',
@@ -17,10 +17,11 @@ export const pluginCatalog: PluginCatalogEntry[] = [
     fields: [],
     tools: ['get_scene_info', 'get_object_info', 'get_viewport_screenshot', 'execute_blender_code'],
     instructions: [
-      'Install this plugin. CoS provides uv and Python automatically if they are missing.',
-      'Then install the Blender addon: run uvx blender-mcp==1.9.1 install-addon in a terminal (needs uv on your PATH), or install addon.py from the source repository.',
-      'In Blender: Preferences → Add-ons → enable Interface: MCP for Blender. Press N in the 3D viewport, open MCP for Blender, and click Start MCP Server.',
-      'Restart this plugin. Ready requires tool discovery and a successful read-only scene probe.',
+      'Install this plugin. CoS manages uv, Python, and the Blender MCP server package automatically.',
+      'CoS automatically discovers your Blender installation and installs/repairs the MCP for Blender add-on with one click.',
+      'In Blender: open the 3D Viewport sidebar (press N) → MCP for Blender, and click Connect to MCP server.',
+      'Click Recheck or Restart MCP in CoS. Ready requires Blender running, add-on connected, and a successful scene probe.',
+      'High-trust capability: execute_blender_code allows arbitrary Python code execution in Blender. Remote telemetry is disabled by default.',
     ],
   },
   {

@@ -15,7 +15,7 @@ beforeEach(() => {
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new dom.window.Event('close')); };
   state = { schemaRevision: 1, catalog: [{ id: 'memory', icon: 'memory', color: '#aaa', name: 'Memory', description: 'Knowledge graph', source: { kind: 'npm', package: 'memory' }, homepage: 'https://example.org', license: 'MIT', instructions: ['Install Node.js.'], fields: [{ key: 'TOKEN', label: 'API token', secret: true, required: true }] }], plugins: [{ id: 'one', name: '<img src=x onerror=alert(1)>', source: { kind: 'command', command: 'node' }, config: {}, credentialKeys: ['TOKEN'], version: '1', license: 'MIT', enabled: true, status: 'ready', installedAt: 1, tools: [] }] };
-  api = Object.fromEntries(['pluginsSnapshot', 'pluginsInstall', 'pluginsConfigure', 'pluginsRestart', 'pluginsUpdate', 'pluginsUninstall', 'pluginsSetEnabled', 'pluginsSetToolEnabled', 'pluginsImportBundle', 'pluginsAuthenticate', 'pluginsCancelAuthentication', 'onPluginsChanged', 'saveSettings', 'setApiKey', 'connect', 'openLink', 'writeClipboard'].map((key) => [key, vi.fn().mockResolvedValue({ ok: true, data: state })]));
+  api = Object.fromEntries(['pluginsSnapshot', 'pluginsInstall', 'pluginsConfigure', 'pluginsRestart', 'pluginsUpdate', 'pluginsUninstall', 'pluginsSetEnabled', 'pluginsSetToolEnabled', 'pluginsImportBundle', 'pluginsAuthenticate', 'pluginsCancelAuthentication', 'onPluginsChanged', 'saveSettings', 'setApiKey', 'connect', 'openLink', 'writeClipboard', 'blenderDetect', 'blenderDiagnose', 'blenderInstallAddon', 'blenderEnableAddon', 'blenderOpen'].map((key) => [key, vi.fn().mockResolvedValue({ ok: true, data: state })]));
   api.pluginsSnapshot!.mockImplementation(async () => ({ ok: true, data: state }));
   Object.assign(dom.window, { api });
 });
@@ -217,4 +217,172 @@ it('keeps a custom remote server without OAuth on its static credential', async 
   [...document.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === 'Install and connect')!.click();
   await tick();
   expect(api.pluginsInstall).toHaveBeenCalledWith({ name: 'My MCP server', source: { kind: 'remote', args: [], url: 'https://mcp.example.org/mcp' }, credentials: { Authorization: 'Bearer x' } });
+});
+
+it('renders Enable Add-on action when ADDON_DISABLED and executes it', async () => {
+  api.blenderEnableAddon!.mockResolvedValue({ ok: true, data: { success: true, message: 'Add-on enabled', enabled: true } });
+  api.blenderDiagnose!.mockResolvedValue({ ok: true, data: {} });
+  state.plugins[0] = {
+    id: 'blender-plugin',
+    name: 'Blender MCP',
+    catalogId: 'blender',
+    source: { kind: 'python', package: 'blender-mcp', version: '1.9.1' },
+    config: { blenderPath: 'C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe' },
+    credentialKeys: [],
+    version: '1.9.1',
+    license: 'MIT',
+    enabled: true,
+    status: 'error',
+    installedAt: 1,
+    tools: [],
+    blender: {
+      code: 'ADDON_DISABLED',
+      status: 'error',
+      message: 'The Blender MCP add-on is installed but disabled in Blender preferences.',
+      diagnostic: 'The add-on is not active in Blender user preferences.',
+      actionRequired: 'Click "Enable Add-on" or in Blender: Preferences → Add-ons → enable "Interface: MCP for Blender".',
+      installation: {
+        executablePath: 'C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe',
+        version: '5.2.1',
+        source: 'installer',
+        exists: true,
+        compatibility: 'SUPPORTED',
+      },
+      addon: {
+        installed: true,
+        path: 'C:\\addons\\blender_mcp.py',
+        version: '1.6',
+        protocolVersion: 5,
+        isUpToDate: true,
+        needsUpdate: false,
+        legacyPaths: [],
+        canonicalInstalled: true,
+        legacyInstalled: false,
+        needsMigration: false,
+      },
+    },
+  };
+  await refreshPlugins();
+  document.querySelector<HTMLButtonElement>('.plugin-entry')!.click();
+  const enableBtn = [...document.querySelectorAll<HTMLButtonElement>('.blender-actions button')].find(b => b.textContent === 'Enable Add-on');
+  expect(enableBtn).toBeDefined();
+  enableBtn!.click();
+  await tick();
+  expect(api.blenderEnableAddon).toHaveBeenCalledWith('C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe');
+  expect(api.blenderDiagnose).toHaveBeenCalled();
+
+  // Test absent when irrelevant
+  state.plugins[0]!.blender!.code = 'READY';
+  await refreshPlugins();
+  const absentBtn = [...document.querySelectorAll<HTMLButtonElement>('.blender-actions button')].find(b => b.textContent === 'Enable Add-on');
+  expect(absentBtn).toBeUndefined();
+});
+
+it('renders Blender plugin detail with complete READY report without contradiction', async () => {
+  state.plugins[0] = {
+    id: 'blender-plugin',
+    name: 'Blender MCP',
+    catalogId: 'blender',
+    source: { kind: 'python', package: 'blender-mcp', version: '1.9.1' },
+    config: { blenderPath: 'C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe' },
+    credentialKeys: [],
+    version: '1.9.1',
+    license: 'MIT',
+    enabled: true,
+    status: 'ready',
+    installedAt: 1,
+    tools: [],
+    blender: {
+      code: 'READY',
+      status: 'ready',
+      message: 'Connected to Blender 5.2.1 on port 9876.',
+      diagnostic: 'Scene probe verified. Blender and the MCP server are running and ready.',
+      installation: {
+        executablePath: 'C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe',
+        version: '5.2.1',
+        source: 'installer',
+        exists: true,
+        compatibility: 'SUPPORTED',
+      },
+      addon: {
+        installed: true,
+        canonicalInstalled: true,
+        legacyInstalled: false,
+        protocolVersion: 5,
+        version: '1.6',
+        isUpToDate: true,
+        needsUpdate: false,
+        needsMigration: false,
+        path: 'C:\\addons\\blender_mcp.py',
+        legacyPaths: [],
+      },
+      server: {
+        port: 9876,
+        listening: true,
+        owningPid: 29508,
+        targetInstancePid: 29508,
+        allBlenderPids: [29508],
+      },
+    },
+  };
+  await refreshPlugins();
+  document.querySelector<HTMLButtonElement>('.plugin-entry')!.click();
+
+  const dialogText = document.getElementById('pluginDialog')!.textContent || '';
+  expect(dialogText).toContain('5.2.1');
+  expect(dialogText).toContain('C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe');
+  expect(dialogText).toContain('Installed (protocol v5)');
+  expect(dialogText).toContain('up to date');
+  expect(dialogText).toContain('Running on port 9876 (PID 29508)');
+  expect(dialogText).toContain('MCP: Connected');
+
+  expect(dialogText).not.toContain('Not detected yet');
+  expect(dialogText).not.toContain('Not installed');
+  expect(dialogText).not.toContain('Not running');
+
+  const installBtn = [...document.querySelectorAll<HTMLButtonElement>('.blender-actions button')].find(
+    b => b.textContent === 'Install Add-on' || b.textContent === 'Repair Add-on',
+  );
+  expect(installBtn).toBeUndefined();
+});
+
+it('renders incomplete/minimal READY report defensively without false negative claims', async () => {
+  state.plugins[0] = {
+    id: 'blender-plugin',
+    name: 'Blender MCP',
+    catalogId: 'blender',
+    source: { kind: 'python', package: 'blender-mcp', version: '1.9.1' },
+    config: {},
+    credentialKeys: [],
+    version: '1.9.1',
+    license: 'MIT',
+    enabled: true,
+    status: 'ready',
+    installedAt: 1,
+    tools: [],
+    blender: {
+      code: 'READY',
+      status: 'ready',
+      message: 'Connected to Blender and MCP server.',
+      diagnostic: 'Scene probe verified.',
+    },
+  };
+  await refreshPlugins();
+  document.querySelector<HTMLButtonElement>('.plugin-entry')!.click();
+
+  const dialogText = document.getElementById('pluginDialog')!.textContent || '';
+
+  // Authoritative status says READY: UI must NOT convert missing diagnostic fields into false negative claims
+  expect(dialogText).not.toContain('Not detected yet');
+  expect(dialogText).not.toContain('Not installed');
+  expect(dialogText).not.toContain('Not running');
+
+  // Should display neutral values such as Verified connection
+  expect(dialogText).toContain('Verified connection');
+
+  // Must NOT show Install Add-on button when report says READY
+  const installBtn = [...document.querySelectorAll<HTMLButtonElement>('.blender-actions button')].find(
+    b => b.textContent === 'Install Add-on',
+  );
+  expect(installBtn).toBeUndefined();
 });

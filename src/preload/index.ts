@@ -13,7 +13,15 @@ import type { ProjectGitChanged, ProjectGitDiff, ProjectGitSnapshot } from '../s
 import type { PetLibraryState, PetOverlayControlState, PetRuntimeAsset } from '../shared/pets.js';
 import type { SkillSummary, ManagedSkill, GitHubSkillUpdateCheck, SkillLibrary, SkillsDraftScope } from '../shared/skills.js';
 import type { ToolEditReview } from '../shared/session.js';
-import type { PluginSnapshot, PluginInstallRequest, PluginConfigPatch } from '../shared/plugins.js';
+import type {
+  PluginSnapshot,
+  PluginInstallRequest,
+  PluginConfigPatch,
+  DiscoveredBlenderInstallation,
+  BlenderHealthReport,
+  BlenderAddonInstallResult,
+  BlenderAddonEnableResult,
+} from '../shared/plugins.js';
 /**
  * The entire renderer-facing API.
  *
@@ -110,6 +118,11 @@ const api = {
   pluginsSetEnabled: (id: string, enabled: boolean) => call<PluginSnapshot>('plugins:enabled', { id, enabled }),
   pluginsSetToolEnabled: (id: string, name: string, enabled: boolean) => call<PluginSnapshot>('plugins:tool', { id, name, enabled }),
   pluginsImportBundle: () => call<string | null>('plugins:importBundle'),
+  blenderDetect: () => call<DiscoveredBlenderInstallation[]>('plugins:blenderDetect'),
+  blenderDiagnose: (executablePath?: string) => call<BlenderHealthReport>('plugins:blenderDiagnose', { executablePath }),
+  blenderInstallAddon: (executablePath?: string) => call<BlenderAddonInstallResult>('plugins:blenderInstallAddon', { executablePath }),
+  blenderEnableAddon: (executablePath?: string) => call<BlenderAddonEnableResult>('plugins:blenderEnableAddon', { executablePath }),
+  blenderOpen: (executablePath?: string) => call<{ success: boolean; pid?: number; error?: string }>('plugins:blenderOpen', { executablePath }),
   onPluginsChanged: (listener: (snapshot: PluginSnapshot) => void): (() => void) => {
     const wrapped = (_event: unknown, snapshot: PluginSnapshot): void => listener(snapshot);
     ipcRenderer.on('plugins:changed', wrapped);

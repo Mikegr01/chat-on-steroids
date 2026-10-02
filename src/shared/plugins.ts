@@ -55,6 +55,76 @@ export interface PluginToolView {
   published?: boolean;
   exposureError?: string;
 }
+
+export type BlenderCompatibility = 'SUPPORTED' | 'UNKNOWN' | 'INCOMPATIBLE';
+
+export type BlenderHealthCode =
+  | 'BLENDER_NOT_FOUND'
+  | 'BLENDER_INCOMPATIBLE'
+  | 'ADDON_NOT_INSTALLED'
+  | 'ADDON_VERSION_MISMATCH'
+  | 'ADDON_DISABLED'
+  | 'BLENDER_NOT_RUNNING'
+  | 'BLENDER_SERVER_NOT_RUNNING'
+  | 'MULTIPLE_INSTANCES_AMBIGUOUS'
+  | 'PORT_COLLISION'
+  | 'CONNECTING'
+  | 'READY'
+  | 'ERROR';
+
+export interface DiscoveredBlenderInstallation {
+  executablePath: string;
+  version: string;
+  source: 'installer' | 'steam' | 'registry' | 'path' | 'user' | 'portable';
+  exists: boolean;
+  compatibility: BlenderCompatibility;
+}
+
+export interface BlenderAddonStatus {
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+  protocolVersion: number | null;
+  isUpToDate: boolean;
+  needsUpdate: boolean;
+  legacyPaths: string[];
+  canonicalInstalled: boolean;
+  legacyInstalled: boolean;
+  needsMigration: boolean;
+}
+
+export interface BlenderHealthReport {
+  code: BlenderHealthCode;
+  status: 'ready' | 'connecting' | 'error' | 'installed';
+  message: string;
+  diagnostic: string;
+  actionRequired?: string;
+  installation?: DiscoveredBlenderInstallation;
+  addon?: BlenderAddonStatus;
+  server?: {
+    port: number;
+    listening: boolean;
+    owningPid?: number;
+    targetInstancePid?: number;
+    allBlenderPids?: number[];
+  };
+}
+
+export interface BlenderAddonInstallResult {
+  success: boolean;
+  message: string;
+  targetPath?: string;
+  addonsDir?: string;
+  backupPath?: string;
+  error?: string;
+}
+
+export interface BlenderAddonEnableResult {
+  success: boolean;
+  message: string;
+  enabled: boolean;
+}
+
 export interface PluginView {
   id: string;
   name: string;
@@ -71,6 +141,7 @@ export interface PluginView {
   error?: string;
   tools: PluginToolView[];
   installedAt: number;
+  blender?: BlenderHealthReport;
 }
 export interface PluginSnapshot {
   plugins: PluginView[];

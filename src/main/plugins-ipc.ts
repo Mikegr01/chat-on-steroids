@@ -4,6 +4,13 @@ import { z } from 'zod';
 import { pluginManager } from './plugins/manager.js';
 import { refreshPluginPublication } from './connection.js';
 import { rearmPluginRefresh } from './plugin-refresh.js';
+import {
+  discoverBlenderInstallations,
+  installBlenderAddon,
+  enableBlenderAddon,
+  openBlender,
+  authorizeBlenderExecutable,
+} from './plugins/blender.js';
 
 const values = z.record(z.string().min(1).max(128), z.string().max(16_384)).refine(value => Object.keys(value).length <= 64, 'At most 64 configuration fields');
 const source = z.object({
@@ -50,6 +57,32 @@ export function registerPluginIpc(
   handle('plugins:importBundle', async () => {
     const result = await dialog.showOpenDialog({ title: 'Import MCP bundle', properties: ['openFile'], filters: [{ name: 'MCP bundles', extensions: ['mcpb'] }] });
     return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  const blenderInput = z.object({ executablePath: z.string().max(4096).optional() }).strict();
+  handle('plugins:blenderDetect', async () => discoverBlenderInstallations());
+  handle('plugins:blenderDiagnose', async payload => {
+    const parsed = blenderInput.parse(payload ?? {});
+    const target = parsed.executablePath
+      ? await authorizeBlenderExecutable(parsed.executablePath, { persistedPath: pluginManager.getPersistedBlenderPath() })
+      : undefined;
+    return pluginManager.diagnoseBlender(undefined, target);
+  });
+  handle('plugins:blenderInstallAddon', async payload => {
+    const parsed = blenderInput.parse(payload ?? {});
+    const target = parsed.executablePath
+      ? await authorizeBlenderExecutable(parsed.executablePath, { persistedPath: pluginManager.getPersistedBlenderPath() })
+      : undefined;
+    return installBlenderAddon(target);
+  });
+  handle('plugins:blenderEnableAddon', async payload => {
+    const parsed = blenderInput.parse(payload ?? {});
+    const target = await authorizeBlenderExecutable(parsed.executablePath, { persistedPath: pluginManager.getPersistedBlenderPath() });
+    return enableBlenderAddon(target);
+  });
+  handle('plugins:blenderOpen', async payload => {
+    const parsed = blenderInput.parse(payload ?? {});
+    const target = await authorizeBlenderExecutable(parsed.executablePath, { persistedPath: pluginManager.getPersistedBlenderPath() });
+    return openBlender(target);
   });
   pluginManager.onChanged(() => {
     refreshPluginPublication('plugins');

@@ -196,7 +196,14 @@
 .plugin-field small { font-weight: 400; line-height: 1.5; }
 .plugin-steps { padding-left: 22px; font-size: calc(13px * var(--text-scale, 1)); line-height: 1.65; color: var(--soft); }
 .plugin-steps li { margin: 10px 0; }
-.plugin-legal { display: block; margin: 32px 0 4px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--soft); font-size: calc(11px * var(--text-scale, 1)); line-height: 1.7; }
+.blender-integration-panel { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--sunk); }
+.blender-integration-panel h3 { margin: 0 0 12px; font-size: calc(14px * var(--text-scale, 1)); font-weight: 650; }
+.blender-status-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; font-size: calc(12px * var(--text-scale, 1)); }
+.blender-status-item { display: flex; gap: 8px; align-items: baseline; }
+.blender-status-label { font-weight: 600; min-width: 90px; color: var(--ink); }
+.blender-status-val { color: var(--soft); overflow-wrap: anywhere; }
+.blender-guidance-box { padding: 10px 12px; margin: 10px 0; border-radius: var(--r-sm); font-size: calc(12px * var(--text-scale, 1)); line-height: 1.5; background: var(--hover); border-left: 3px solid #e87932; }
+.blender-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .plugins-panel :is(button, summary):focus-visible, .plugin-dialog :is(button, summary, input, select):focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 @media (max-width: 860px) {
   .panel.plugins-panel { padding: 32px 24px; }

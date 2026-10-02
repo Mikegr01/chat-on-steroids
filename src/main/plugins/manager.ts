@@ -16,6 +16,7 @@ import { pluginCatalog, reviewedPluginLicense } from './catalog.js';
 import sharp from 'sharp';
 import { pluginExposure } from './exposure.js';
 import { PluginOAuth, PluginNeedsAuth, PluginOAuthSetupError, clearPluginOAuth } from './oauth.js';
+import { diagnoseBlenderHealth, type BlenderHealthReport } from './blender.js';
 export { PLUGIN_MAX_TOOLS, PLUGIN_MAX_SCHEMA_BYTES } from './exposure.js';
 
 interface RecordEntry extends Omit<PluginView, 'tools'> {
@@ -65,6 +66,7 @@ export class PluginManager {
   private closing = false;
   private connecting = new Map<Client, StdioClientTransport | undefined>();
   private authenticating = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  private blenderHealthCache = new Map<string, BlenderHealthReport>();
   onChanged(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -73,6 +75,26 @@ export class PluginManager {
     this.exposureCache = null;
     this.revision++;
     for (const listener of this.listeners) listener();
+  }
+  async diagnoseBlender(id?: string, executablePath?: string): Promise<BlenderHealthReport> {
+    const row = id ? this.records.find((r) => r.id === id) : this.records.find((r) => r.catalogId === 'blender');
+    const port = row?.config?.BLENDER_PORT ? parseInt(row.config.BLENDER_PORT, 10) : undefined;
+    const report = await diagnoseBlenderHealth({
+      executablePath: executablePath ?? row?.config?.blenderPath,
+      port,
+    });
+    if (row) {
+      if (report.code === 'READY' && this.live.has(row.id)) {
+        report.diagnostic = 'Scene probe verified. Blender and the MCP server are running and ready.';
+      }
+      this.blenderHealthCache.set(row.id, report);
+      this.changed();
+    }
+    return report;
+  }
+  getPersistedBlenderPath(): string | undefined {
+    const row = this.records.find((r) => r.catalogId === 'blender');
+    return row?.config?.blenderPath;
   }
   private serial<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const next = (this.queues.get(id) ?? Promise.resolve()).then(fn);
@@ -123,6 +145,7 @@ export class PluginManager {
           published: exposure.owners.get(tool.name) === row.id,
           ...(exposure.issues.get(row.id)?.get(tool.name) ? { exposureError: exposure.issues.get(row.id)!.get(tool.name) } : {}),
         })),
+        ...(row.catalogId === 'blender' && this.blenderHealthCache.has(row.id) ? { blender: this.blenderHealthCache.get(row.id) } : {}),
       })),
     });
   }
@@ -453,6 +476,7 @@ export class PluginManager {
     const retirement = this.disconnect(row);
     void retirement.catch(() => undefined);
     this.records = this.records.filter((p) => p !== row);
+    this.blenderHealthCache.delete(id);
     this.changed();
     return this.serial(id, async () => {
       await retirement;
@@ -686,6 +710,13 @@ export class PluginManager {
           setEnvValue(env, 'PLAYWRIGHT_MCP_CODEGEN', 'none');
           if (!launch.args.includes('--isolated')) launch.args.push('--isolated');
         }
+        if (row.catalogId === 'blender') {
+          setEnvValue(env, 'DISABLE_TELEMETRY', '1');
+          setEnvValue(env, 'BLENDER_MCP_DISABLE_TELEMETRY', '1');
+          setEnvValue(env, 'MCP_DISABLE_TELEMETRY', '1');
+          if (row.config.BLENDER_PORT) setEnvValue(env, 'BLENDER_PORT', row.config.BLENDER_PORT);
+          if (row.config.BLENDER_HOST) setEnvValue(env, 'BLENDER_HOST', row.config.BLENDER_HOST);
+        }
         for (const [k, v] of Object.entries({ ...row.config, ...secrets, ...launch.env })) setEnvValue(env, k, v);
         const data = path.join(this.root, row.id, 'data');
         await fs.mkdir(data, { recursive: true });
@@ -716,8 +747,61 @@ export class PluginManager {
           user_prompt: 'Read-only connection check: inspect the current Blender scene without changing it.',
         } }, { timeout: 15000, toolDefinition: probe });
         if (result.isError || result.content.some((block) => block.type === 'text' &&
-          /^(?:error\b|could not connect\b|connection refused\b)/i.test(block.text.trim())))
-          throw new Error('Open Blender, enable its MCP addon, and click Start MCP Server in Blender. Then restart this plugin.');
+          /^(?:error\b|could not connect\b|connection refused\b)/i.test(block.text.trim()))) {
+          let diagMsg = 'Open Blender, enable its MCP addon, and click Start MCP Server in Blender. Then restart this plugin.';
+          try {
+            const diag = await diagnoseBlenderHealth({
+              executablePath: row.config.blenderPath,
+              port: row.config.BLENDER_PORT ? parseInt(row.config.BLENDER_PORT, 10) : undefined,
+            });
+            this.blenderHealthCache.set(row.id, diag);
+            diagMsg = diag.message + (diag.actionRequired ? ' ' + diag.actionRequired : '');
+          } catch {}
+          throw new Error(diagMsg);
+        }
+        const port = row.config.BLENDER_PORT ? parseInt(row.config.BLENDER_PORT, 10) : undefined;
+        try {
+          const diag = await diagnoseBlenderHealth({
+            executablePath: row.config.blenderPath,
+            port,
+          });
+          if (diag.code === 'READY') {
+            this.blenderHealthCache.set(row.id, {
+              ...diag,
+              code: 'READY',
+              status: 'ready',
+              message: diag.message || 'Connected to Blender and MCP server.',
+              diagnostic: 'Scene probe verified. Blender and the MCP server are running and ready.',
+            });
+          } else {
+            this.blenderHealthCache.set(row.id, {
+              ...diag,
+              code: diag.code,
+              status: 'error',
+              message: diag.message || 'MCP responded but Blender health verification failed.',
+              diagnostic: diag.diagnostic
+                ? `${diag.diagnostic} (MCP scene probe verified, but host health reported ${diag.code}).`
+                : `MCP scene probe verified, but host health reported ${diag.code}.`,
+            });
+          }
+        } catch (diagError) {
+          const existing = this.blenderHealthCache.get(row.id);
+          if (existing && existing.installation && existing.addon && existing.server) {
+            this.blenderHealthCache.set(row.id, {
+              ...existing,
+              code: 'READY',
+              status: 'ready',
+              diagnostic: 'Scene probe verified.',
+            });
+          } else {
+            this.blenderHealthCache.set(row.id, {
+              code: 'ERROR',
+              status: 'error',
+              message: 'MCP server connected, but Blender health verification failed.',
+              diagnostic: (diagError as Error).message || 'Host diagnosis threw an unexpected error.',
+            });
+          }
+        }
       }
       if (row.catalogId === 'nvidia-gpu') {
         const probe = tools.find((t) => t.name === 'gpu_stats');
