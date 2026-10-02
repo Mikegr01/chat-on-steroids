@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -338,6 +339,56 @@ describe('editTextFile', () => {
     const bytes = await fs.readFile(utf16);
     expect(bytes.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xfe]));
     expect((await readTextFile(utf16)).text).toBe('BETA');
+  });
+
+  it('accepts the exact expected-before hash and returns hashes for the bytes committed', async () => {
+    const file = await scratch('batch-hash-ok.txt', 'alpha\n');
+    const before = createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    const [result] = await editTextFiles([{
+      realPath: file,
+      virtualPath: '/root/hash.txt',
+      expectedBeforeSha256: before,
+      edits: [{ oldText: 'alpha', newText: 'ALPHA\nBETA' }]
+    }]);
+    const written = await fs.readFile(file);
+    expect(result?.beforeSha256).toBe(before);
+    expect(result?.afterSha256).toBe(createHash('sha256').update(written).digest('hex'));
+    expect(result?.delta).toMatchObject({ added: 2, removed: 1 });
+  });
+
+  it('rejects stale expected-before state with zero changes', async () => {
+    const file = await scratch('batch-hash-stale.txt', 'alpha\n');
+    await expect(editTextFiles([{
+      realPath: file,
+      virtualPath: '/root/stale.txt',
+      expectedBeforeSha256: '0'.repeat(64),
+      edits: [{ oldText: 'alpha', newText: 'ALPHA' }]
+    }])).rejects.toThrow(/STALE_FILE_STATE/);
+    expect(await fs.readFile(file, 'utf8')).toBe('alpha\n');
+  });
+
+  it('makes one stale member abort the whole multi-file batch', async () => {
+    const first = await scratch('batch-hash-a.txt', 'alpha\n');
+    const second = await scratch('batch-hash-b.txt', 'beta\n');
+    const firstHash = createHash('sha256').update(await fs.readFile(first)).digest('hex');
+    await expect(editTextFiles([
+      { realPath: first, virtualPath: '/root/a.txt', expectedBeforeSha256: firstHash, edits: [{ oldText: 'alpha', newText: 'ALPHA' }] },
+      { realPath: second, virtualPath: '/root/b.txt', expectedBeforeSha256: 'f'.repeat(64), edits: [{ oldText: 'beta', newText: 'BETA' }] }
+    ])).rejects.toThrow(/STALE_FILE_STATE/);
+    expect(await fs.readFile(first, 'utf8')).toBe('alpha\n');
+    expect(await fs.readFile(second, 'utf8')).toBe('beta\n');
+  });
+
+  it('keeps legacy batch callers working without an expected-before hash', async () => {
+    const file = await scratch('batch-legacy.txt', 'alpha\n');
+    const [result] = await editTextFiles([{
+      realPath: file,
+      virtualPath: '/root/legacy.txt',
+      edits: [{ oldText: 'alpha', newText: 'ALPHA' }]
+    }]);
+    expect(await fs.readFile(file, 'utf8')).toBe('ALPHA\n');
+    expect(result?.beforeSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result?.afterSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rolls back an earlier file when a later staged commit fails', async () => {

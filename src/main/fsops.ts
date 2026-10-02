@@ -498,12 +498,15 @@ interface PreparedTextEdit {
   nextBytes: Buffer;
   replacements: number;
   delta: LineDelta;
+  beforeSha256: string;
+  afterSha256: string;
 }
 
 export interface BatchTextEditInput {
   realPath: string;
   virtualPath: string;
   edits: readonly EditOp[];
+  expectedBeforeSha256?: string;
 }
 
 export interface BatchTextEditResult {
@@ -511,12 +514,15 @@ export interface BatchTextEditResult {
   replacements: number;
   bytes: number;
   delta: LineDelta;
+  beforeSha256: string;
+  afterSha256: string;
 }
 
 async function prepareTextEdit(
   realPath: string,
   virtualPath: string,
-  edits: readonly EditOp[]
+  edits: readonly EditOp[],
+  expectedBeforeSha256?: string
 ): Promise<PreparedTextEdit> {
   const stat = await fs.stat(realPath);
   if (!stat.isFile()) throw new FsOpError(`${virtualPath}: not a file`);
@@ -527,6 +533,10 @@ async function prepareTextEdit(
 
   const format = await textFormat(realPath);
   const originalBytes = await fs.readFile(realPath);
+  const beforeSha256 = createHash('sha256').update(originalBytes).digest('hex');
+  if (expectedBeforeSha256 !== undefined && beforeSha256 !== expectedBeforeSha256.toLowerCase()) {
+    throw new FsOpError(`${virtualPath}: STALE_FILE_STATE`);
+  }
   const original = decodeText(originalBytes, format);
   let content = original;
   let replacements = 0;
@@ -555,7 +565,8 @@ async function prepareTextEdit(
 
   if (content === original) throw new FsOpError(`${virtualPath}: edits produced no change`);
   const nextBytes = encodeText(content, format, true);
-  return { realPath, virtualPath, originalBytes, nextBytes, replacements, delta: lineDelta(original, content) };
+  const afterSha256 = createHash('sha256').update(nextBytes).digest('hex');
+  return { realPath, virtualPath, originalBytes, nextBytes, replacements, delta: lineDelta(original, content), beforeSha256, afterSha256 };
 }
 
 /**
@@ -602,7 +613,7 @@ export async function editTextFiles(
   let totalBytes = 0;
   for (const file of files) {
     if (file.edits.length === 0) throw new FsOpError(`${file.virtualPath}: at least one edit is required`);
-    const item = await prepareTextEdit(file.realPath, file.virtualPath, file.edits);
+    const item = await prepareTextEdit(file.realPath, file.virtualPath, file.edits, file.expectedBeforeSha256);
     totalBytes += Math.max(item.originalBytes.length, item.nextBytes.length);
     if (totalBytes > MAX_BATCH_EDIT_BYTES) {
       throw new FsOpError(`Batch is too large to edit safely (limit ${formatBytes(MAX_BATCH_EDIT_BYTES)})`);
@@ -685,7 +696,9 @@ export async function editTextFiles(
     virtualPath: item.virtualPath,
     replacements: item.replacements,
     bytes: item.nextBytes.length,
-    delta: item.delta
+    delta: item.delta,
+    beforeSha256: item.beforeSha256,
+    afterSha256: item.afterSha256
   }));
 }
 
