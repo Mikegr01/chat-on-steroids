@@ -12,10 +12,13 @@ it('uses reviewed transitional licenses only for the exact installed distributio
   expect(reviewedPluginLicense({ ...fetch.source, version: '2099.1.0' }, 'See installed dist-info licenses')).toBe('See installed dist-info licenses');
 });
 
-it('offers seven distinct reviewed recipes with packaged local artwork', async () => {
-  expect(pluginCatalog).toHaveLength(7);
+it('offers nine distinct reviewed recipes with packaged local artwork and curation metadata', async () => {
+  expect(pluginCatalog).toHaveLength(9);
   expect(new Set(pluginCatalog.map(recipe => recipe.id)).size).toBe(pluginCatalog.length);
   for (const recipe of pluginCatalog) {
+    expect(recipe.category).toBeTruthy();
+    expect(recipe.maintainer).toBeTruthy();
+    expect(['core', 'specialist']).toContain(recipe.tier);
     if (recipe.source.kind === 'remote') {
       expect(recipe.source.auth).toBe('oauth');
       expect(recipe.source.url).toMatch(/^https:\/\//);
@@ -27,7 +30,7 @@ it('offers seven distinct reviewed recipes with packaged local artwork', async (
 
 it('keeps the curated catalog focused on capabilities beyond Core file and exec tools', () => {
   expect(pluginCatalog.map(recipe => recipe.id)).toEqual([
-    'blender', 'memory', 'playwright', 'fetch', 'heygen', 'recraft', 'unity',
+    'blender', 'memory', 'playwright', 'chrome-devtools', 'nvidia-gpu', 'fetch', 'heygen', 'recraft', 'unity',
   ]);
   for (const recipe of pluginCatalog) {
     expect(recipe.tools?.length).toBeGreaterThan(0);
@@ -35,6 +38,50 @@ it('keeps the curated catalog focused on capabilities beyond Core file and exec 
     for (const field of recipe.fields) expect(field.secret).toBe(true);
     expect(recipe.source.args?.join(' ') ?? '').not.toMatch(/api.?key|token/i);
   }
+});
+
+it('keeps NVIDIA GPU Monitor focused on local hardware telemetry with pinned SDK compatibility', () => {
+  const gpu = pluginCatalog.find(recipe => recipe.id === 'nvidia-gpu')!;
+  expect(gpu.tier).toBe('specialist');
+  expect(gpu.category).toBe('gpu-monitoring');
+  expect(gpu.source).toMatchObject({
+    kind: 'python',
+    package: 'mcp-gpu-server',
+    version: '0.1.3',
+    command: 'mcp-gpu-server',
+    dependencies: [{ package: 'mcp', version: '1.15.0' }],
+  });
+  expect(gpu.tools).toEqual(expect.arrayContaining([
+    'gpu_stats',
+    'gpu_info',
+    'gpu_vram',
+    'gpu_temperature',
+    'gpu_utilization',
+  ]));
+});
+
+it('keeps Chrome DevTools focused on diagnosis instead of duplicating Playwright automation', () => {
+  const chrome = pluginCatalog.find(recipe => recipe.id === 'chrome-devtools')!;
+  expect(chrome.tier).toBe('specialist');
+  expect(chrome.category).toBe('browser-debugging');
+  expect(chrome.source).toMatchObject({
+    kind: 'npm',
+    package: 'chrome-devtools-mcp',
+    version: '1.10.1',
+    args: expect.arrayContaining([
+      '--isolated',
+      '--no-usage-statistics',
+      '--no-performance-crux',
+      '--no-category-input',
+      '--no-category-emulation',
+      '--no-category-memory',
+    ]),
+  });
+  expect(chrome.tools).toEqual(expect.arrayContaining([
+    'list_console_messages',
+    'list_network_requests',
+    'performance_start_trace',
+  ]));
 });
 
 it('preserves an exact license reference for every pinned catalog distribution', async () => {

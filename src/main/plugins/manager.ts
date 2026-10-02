@@ -264,6 +264,8 @@ export class PluginManager {
       if (this.closing) throw new Error('Plugins are shutting down');
       if (this.records.length >= 24) throw new Error('At most 24 plugins may be installed');
       const catalog = pluginCatalog.find((p) => p.id === request.catalogId);
+      if (request.catalogId && this.records.some((p) => p.catalogId === request.catalogId))
+        throw new Error('This catalog plugin is already installed');
       let source = structuredClone(request.source ?? catalog?.source);
       if (!source) throw new Error('Choose an integration or installation source');
       if (source.auth && source.kind !== 'remote') throw new Error('OAuth requires a remote source.');
@@ -680,8 +682,10 @@ export class PluginManager {
         // Use the upstream response policy, not markdown surgery after execution. Apply at
         // launch so existing official installations also stop echoing submitted/generated code.
         // Explicit user configuration/CLI options retain their normal precedence.
-        if (row.source.kind === 'npm' && row.source.package === '@playwright/mcp')
+        if (row.source.kind === 'npm' && row.source.package === '@playwright/mcp') {
           setEnvValue(env, 'PLAYWRIGHT_MCP_CODEGEN', 'none');
+          if (!launch.args.includes('--isolated')) launch.args.push('--isolated');
+        }
         for (const [k, v] of Object.entries({ ...row.config, ...secrets, ...launch.env })) setEnvValue(env, k, v);
         const data = path.join(this.root, row.id, 'data');
         await fs.mkdir(data, { recursive: true });
@@ -714,6 +718,20 @@ export class PluginManager {
         if (result.isError || result.content.some((block) => block.type === 'text' &&
           /^(?:error\b|could not connect\b|connection refused\b)/i.test(block.text.trim())))
           throw new Error('Open Blender, enable its MCP addon, and click Start MCP Server in Blender. Then restart this plugin.');
+      }
+      if (row.catalogId === 'nvidia-gpu') {
+        const probe = tools.find((t) => t.name === 'gpu_stats');
+        if (!probe) throw new Error('NVIDIA GPU stats probe is unavailable');
+        const result = await client.callTool({ name: probe.name, arguments: {} }, { timeout: 15000, toolDefinition: probe });
+        if (result.isError) throw new Error('NVIDIA GPU monitoring probe failed. Ensure NVIDIA drivers are installed.');
+        let hasGpu = false;
+        try {
+          const textBlock = result.content.find((block) => block.type === 'text');
+          const raw = textBlock && 'text' in textBlock ? textBlock.text : undefined;
+          const data = (result.structuredContent ?? (raw && JSON.parse(raw))) as { count?: number; error?: string } | undefined;
+          if (data && typeof data.count === 'number' && data.count > 0 && !data.error) hasGpu = true;
+        } catch {}
+        if (!hasGpu) throw new Error('NVIDIA GPU or driver unavailable on this machine. NVIDIA GPU Monitor requires a compatible NVIDIA GPU and drivers.');
       }
       if (signal.aborted || this.closing || !row.enabled) {
         if (transport?.pid) await terminateProcessTree(transport.pid, true);

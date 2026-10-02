@@ -13,7 +13,7 @@ import { makeTempDir, removeTempDir } from './helpers.js';
 // Playwright executes against an ephemeral loopback page, never the user's browser/profile.
 // Every locally installed catalog entry is here (fetch has its own Python test); heygen and
 // recraft are hosted OAuth services with nothing to install.
-for (const id of ['blender', 'unity', 'playwright', 'memory']) {
+for (const id of ['blender', 'unity', 'playwright', 'chrome-devtools', 'memory', 'nvidia-gpu']) {
   it.runIf(process.env.COS_PLUGIN_LIVE_TEST === '1')(`installs ${id} and verifies its advertised tool preview over stdio`, async () => {
     const directory = await makeTempDir(`cos-catalog-${id}-`);
     // As at app startup: without uv on PATH, installs fall back to the managed copy under userData.
@@ -26,8 +26,11 @@ for (const id of ['blender', 'unity', 'playwright', 'memory']) {
       const launch = await installSource(recipe.source, directory);
       if (id === 'playwright') {
         await runInstaller(launch.command, [path.join(directory, 'node_modules/playwright/cli.js'), 'install', 'chromium'], directory);
-        launch.args.push('--headless', '--browser', 'chromium', '--isolated');
+        if (!launch.args.includes('--isolated')) launch.args.push('--isolated');
+        if (!launch.args.includes('--headless')) launch.args.push('--headless');
+        if (!launch.args.includes('--browser')) launch.args.push('--browser', 'chromium');
       }
+      if (id === 'chrome-devtools') launch.args.push('--headless');
       transport = new StdioClientTransport({ command: launch.command, args: launch.args, cwd: directory, stderr: 'ignore' });
       await client.connect(transport, { timeout: 20000 });
       const names = (await client.listTools({}, { timeout: 15000 })).tools.map(tool => tool.name);
@@ -44,6 +47,23 @@ for (const id of ['blender', 'unity', 'playwright', 'memory']) {
         const content = await client.callTool({ name: 'browser_evaluate', arguments: { function: "() => document.querySelector('h1')?.textContent" } });
         expect(content.isError, JSON.stringify(content)).not.toBe(true);
         expect(JSON.stringify(content)).toContain('CoS plugin browser fixture');
+      }
+      if (id === 'chrome-devtools') {
+        const pages = await client.callTool({ name: 'list_pages', arguments: {} }, { timeout: 30000 });
+        expect(pages.isError, JSON.stringify(pages)).not.toBe(true);
+        expect(JSON.stringify(pages)).toContain('about:blank');
+        const consoleMessages = await client.callTool({ name: 'list_console_messages', arguments: { pageId: 1 } }, { timeout: 15000 });
+        expect(consoleMessages.isError, JSON.stringify(consoleMessages)).not.toBe(true);
+        const requests = await client.callTool({ name: 'list_network_requests', arguments: { pageId: 1 } }, { timeout: 15000 });
+        expect(requests.isError, JSON.stringify(requests)).not.toBe(true);
+      }
+      if (id === 'nvidia-gpu') {
+        const stats = await client.callTool({ name: 'gpu_stats', arguments: {} }, { timeout: 15000 });
+        expect(stats.isError, JSON.stringify(stats)).not.toBe(true);
+        expect(JSON.stringify(stats)).toMatch(/NVIDIA|RTX|GeForce/i);
+        const info = await client.callTool({ name: 'gpu_info', arguments: {} }, { timeout: 15000 });
+        expect(info.isError, JSON.stringify(info)).not.toBe(true);
+        expect(JSON.stringify(info)).toMatch(/NVIDIA|RTX|GeForce/i);
       }
     } finally {
       // Match PluginManager shutdown: Python entry-point launchers can own a child

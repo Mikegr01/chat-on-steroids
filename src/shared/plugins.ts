@@ -31,6 +31,12 @@ export interface PluginCatalogEntry {
   id: string;
   name: string;
   description: string;
+  /** Curated capability class used to keep Explore intentional rather than directory-like. */
+  category?: string;
+  /** Upstream project/vendor responsible for the reviewed integration. */
+  maintainer?: string;
+  /** Specialist integrations stay opt-in and should not expand the default tool surface. */
+  tier?: 'core' | 'specialist';
   icon: string;
   color: string;
   source: PluginSource;

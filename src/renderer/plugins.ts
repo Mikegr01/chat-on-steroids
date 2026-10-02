@@ -128,6 +128,12 @@ function renderInstalled(): void {
     const open = button('', () => showPlugin(plugin)); open.className = 'plugin-entry';
     const title = el('div', 'plugin-card-title');
     title.append(el('h2', '', plugin.name));
+    if (recipe?.tier || recipe?.category) {
+      const meta = el('div', 'plugin-badges');
+      if (recipe.tier) meta.append(el('span', `plugin-badge-tier is-${recipe.tier}`, () => recipe.tier === 'core' ? t("Core") : t("Specialist")));
+      if (recipe.category) meta.append(el('span', 'plugin-badge-category', recipe.category));
+      title.append(meta);
+    }
     ui(open, 'aria-label', () => t("Open {0}", [plugin.name]));
     const status = () => plugin.status === 'error' ? t("Needs attention") : plugin.status === 'needs-auth' ? t("Sign in needed") : plugin.status === 'authenticating' ? t("Signing in…") : plugin.status === 'ready' && plugin.tools.length ? t("Ready") : plugin.status === 'ready' ? t("Connected · no tools") : plugin.status === 'connecting' ? t("Connecting…") : plugin.status === 'disabled' ? t("Disabled") : t("Check connection");
     const count = plugin.tools.filter(tool => tool.enabled).length;
@@ -165,7 +171,16 @@ function renderCatalog(parent: HTMLElement, query = ''): void {
   parent.replaceChildren();
   for (const recipe of availableRecipes().filter(entry => `${entry.name} ${entry.description} ${t(entry.description)}`.toLowerCase().includes(query))) {
     const card = button('', () => showRecipe(recipe)); card.className = 'plugin-catalog-card';
-    const text = el('span', 'plugin-card-title'); text.append(el('h3', '', recipe.name), el('p', 'muted', () => t(recipe.description)));
+    const text = el('span', 'plugin-card-title');
+    text.append(el('h3', '', recipe.name));
+    if (recipe.tier || recipe.category || recipe.maintainer) {
+      const meta = el('div', 'plugin-badges');
+      if (recipe.tier) meta.append(el('span', `plugin-badge-tier is-${recipe.tier}`, () => recipe.tier === 'core' ? t("Core") : t("Specialist")));
+      if (recipe.category) meta.append(el('span', 'plugin-badge-category', recipe.category));
+      if (recipe.maintainer) meta.append(el('span', 'plugin-maintainer', () => t("by {0}", [recipe.maintainer])));
+      text.append(meta);
+    }
+    text.append(el('p', 'muted', () => t(recipe.description)));
     card.append(art(recipe.icon), text); parent.append(card);
   }
   if (!parent.children.length) parent.append(el('p', 'plugin-no-results muted', () => query
@@ -202,6 +217,13 @@ function showPlugin(plugin: PluginView): void {
   const intro = el('div', 'plugin-detail-intro');
   const configure = button(() => t("Configure Plugin"), () => showConfigure(plugin), true); configure.classList.add('plugin-configure');
   intro.append(el('p', '', () => recipe ? t(recipe.description) : t("Your own MCP server, available in your conversations.")), configure);
+  if (recipe?.tier || recipe?.category || recipe?.maintainer) {
+    const meta = el('div', 'plugin-badges');
+    if (recipe.tier) meta.append(el('span', `plugin-badge-tier is-${recipe.tier}`, () => recipe.tier === 'core' ? t("Core") : t("Specialist")));
+    if (recipe.category) meta.append(el('span', 'plugin-badge-category', recipe.category));
+    if (recipe.maintainer) meta.append(el('span', 'plugin-maintainer', () => t("by {0}", [recipe.maintainer])));
+    intro.append(meta);
+  }
   hero.append(art(recipe?.icon ?? plugin.catalogId ?? 'custom'), intro); body.append(hero);
   const tools = el('section', 'plugin-detail-tools'); tools.dataset.pluginDetail = plugin.id; renderPluginTools(tools, plugin); body.append(tools);
   const about = document.createElement('details'); about.className = 'plugin-about'; about.append(el('summary', '', () => t("About this plugin")));
@@ -242,7 +264,18 @@ function showCatalog(): void {
   body.append(custom, el('p', 'hint', () => t("Local plugins run as your OS user and do not inherit CoS approved-folder restrictions. Install only code you trust.")));
 }
 function showRecipe(recipe: PluginCatalogEntry): void {
-  const { box, body } = dialog(() => t("Set up {0}", [recipe.name])); const header = el('div', 'plugin-card-head'); header.append(art(recipe.icon), el('p', '', () => t(recipe.description))); body.append(header);
+  const { box, body } = dialog(() => t("Set up {0}", [recipe.name]));
+  const header = el('div', 'plugin-card-head');
+  const headCopy = el('div', 'plugin-detail-intro');
+  headCopy.append(el('p', '', () => t(recipe.description)));
+  if (recipe.tier || recipe.category || recipe.maintainer) {
+    const meta = el('div', 'plugin-badges');
+    if (recipe.tier) meta.append(el('span', `plugin-badge-tier is-${recipe.tier}`, () => recipe.tier === 'core' ? t("Core") : t("Specialist")));
+    if (recipe.category) meta.append(el('span', 'plugin-badge-category', recipe.category));
+    if (recipe.maintainer) meta.append(el('span', 'plugin-maintainer', () => t("by {0}", [recipe.maintainer])));
+    headCopy.append(meta);
+  }
+  header.append(art(recipe.icon), headCopy); body.append(header);
   const actions = el('div', 'plugin-actions'); body.append(actions);
   if (recipe.tools?.length) {
     const tools = el('ul', 'plugin-tool-preview'); for (const name of recipe.tools) tools.append(el('li', '', () => t(name)));
