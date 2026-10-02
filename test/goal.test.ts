@@ -59,7 +59,7 @@ function stream(chunks: string[]): Response {
 const delta = (text: string): string => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n`;
 
 /** The non-streaming strict response shape requested from OpenRouter in production. */
-function decision(action: 'stop' | 'continue', reply = ''): Response {
+function decision(action: 'stop' | 'blocked' | 'continue', reply = ''): Response {
   return Response.json({
     choices: [{ message: { content: JSON.stringify({ action, reply }) } }]
   });
@@ -205,6 +205,18 @@ describe('what leaves this machine', () => {
     await expect(goal.draftFastFollowup(session.id, undefined, context)).rejects.toMatchObject({ retryable: true });
     const timeout = AbortSignal.abort(new DOMException('Timed out', 'TimeoutError'));
     await expect(goal.draftFastFollowup(session.id, timeout, context)).rejects.toMatchObject({ retryable: true });
+  });
+  it('surfaces a structured Loop blocker from a fast follow-up without inventing a continuation', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, loopBackend: 'api' } });
+    const session = await createSession({ title: 'finish blocked', conversationId: 'finish-loop-blocked' });
+    await recordLoopMcpProof(session.id);
+    const context = [{ role: 'user' as const, content: 'Finish checking the project' }];
+    globalThis.fetch = vi.fn(async () => decision('blocked'));
+
+    const failure = goal.draftFastFollowup(session.id, undefined, context);
+    await expect(failure).rejects.toMatchObject({ message: 'goal_blocked', retryable: false });
+    await expect(failure).rejects.not.toThrow('loop_stop_refused');
+    await expect(failure).rejects.not.toThrow('Goal did not return a usable follow-up');
   });
   it.each([false, true])('excludes tool bodies from decisions and finish even with legacy tool opt-in (%s)', async (includeToolCalls) => {
     await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'api', loopBackend: 'api', includeToolCalls } });
@@ -930,6 +942,27 @@ describe('the reply', () => {
     goal.startGoalDraft({ sessionId, conversationId: 'c-structured-stop', turnId: 'g-1' });
     const view = await settled('c-structured-stop');
     expect(view.stage).toBe('no-reply');
+    expect(view.reply).toBe('');
+  });
+
+  it('keeps a concrete blocker distinct from successful Goal completion', async () => {
+    const sessionId = await seed('c-structured-blocked');
+    globalThis.fetch = (async () => decision('blocked')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-structured-blocked', turnId: 'g-1' });
+    const view = await settled('c-structured-blocked');
+    expect(view.stage).toBe('blocked');
+    expect(view.reply).toBe('');
+  });
+
+  it('fails closed when blocked carries a synthetic user reply', async () => {
+    const sessionId = await seed('c-structured-blocked-reply');
+    globalThis.fetch = (async () => decision('blocked', 'pretend this came from the user')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-structured-blocked-reply', turnId: 'g-1' });
+    const view = await settled('c-structured-blocked-reply');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('invalid_goal_decision_schema');
     expect(view.reply).toBe('');
   });
 
@@ -2340,9 +2373,12 @@ describe('opening a chat on a goal', () => {
 
     const messages = sent['messages'] as Array<{ role: string; content: string }>;
     expect(messages[0]!.content).toBe(prompts.DEFAULT_GOAL_LOOP_SYSTEM_PROMPT);
-    // The schema goes with the instruction: in loop mode the enum has no way to spell a stop,
-    // so the mode is enforced at the wire as well as asked for in words.
-    expect(JSON.stringify(sent['response_format'])).toContain('always continue');
+    // The schema goes with the instruction: ordinary stop is absent, while a concrete blocker
+    // has its own terminal value.
+    const responseFormat = sent['response_format'];
+    expect(responseFormat).toMatchObject({
+      json_schema: { schema: { properties: { action: { enum: ['blocked', 'continue'] } } } }
+    });
     // And the closing reminder is the loop's, which is where a model that only read the last
     // thing it was shown is told that stopping is not one of its moves.
     expect(messages.at(-1)!.content).toBe(prompts.GOAL_LOOP_TRAILER);
@@ -2392,7 +2428,7 @@ describe('the loop that never stops', () => {
     return session.id;
   };
 
-  it('sends the loop instruction, its own trailer, and a schema with no stop in it', async () => {
+  it('sends the loop instruction, its own trailer, and a schema with blocked but no ordinary stop', async () => {
     await loopMode();
     const sessionId = await seed('c-loop-1');
     let body: any = null;
@@ -2413,10 +2449,71 @@ describe('the loop that never stops', () => {
     // Neither of the other two instructions comes along: one would tell the model it may stop
     // while the other tells it it may not.
     expect(system.join('\n')).not.toContain('You have exactly two moves');
-    expect(system[1]).toContain('Action is always "continue"');
+    expect(system[1]).toContain('Use action "continue" whenever another authorized useful step exists');
+    expect(system[1]).toContain('Use action "blocked" only when a concrete unavailable requirement prevents progress');
     expect(body.messages.at(-1).content).toBe(prompts.GOAL_LOOP_TRAILER);
     // The app's half of the same promise, made where a model cannot argue with it.
-    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['continue']);
+    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['blocked', 'continue']);
+    expect(body.response_format.json_schema.schema.properties.reply.description).toBe(
+      'empty for blocked; for continue, the exact next message to send as the user'
+    );
+  });
+
+  it('describes Goal reply as empty for both successful stop and blocked', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, backend: 'api', enabled: true, mode: 'goal' } });
+    const sessionId = await seed('c-goal-schema-reply-contract');
+    let body: { response_format?: { json_schema?: { schema?: { properties?: { reply?: { description?: string } } } } } } = {};
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body)) as typeof body;
+      return decision('stop');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-goal-schema-reply-contract', turnId: 'g-goal-schema-reply-contract' });
+    await settled('c-goal-schema-reply-contract');
+
+    expect(body.response_format?.json_schema?.schema?.properties?.reply?.description).toBe(
+      'empty for stop or blocked; for continue, only the exact next message to send as the user'
+    );
+  });
+
+  it('terminates Loop only for a structured concrete blocker', async () => {
+    await loopMode();
+    const sessionId = await seed('c-loop-blocked');
+    globalThis.fetch = (async () => decision('blocked')) as never;
+
+    await recordLoopMcpProof(sessionId, 'g-loop-blocked');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-blocked', turnId: 'g-loop-blocked' });
+    const view = await settled('c-loop-blocked');
+
+    expect(view.stage).toBe('blocked');
+    expect(view.reply).toBe('');
+  });
+
+  it('retires the exact Loop reply obligation after the blocked terminal is acknowledged', async () => {
+    await loopMode();
+    const conversationId = 'c-loop-blocked-ack';
+    const session = await createSession({ title: 'loop blocked ack', conversationId });
+    const sessionId = session.id;
+    await appendEvent(sessionId, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'build the parser', truncated: false, chars: 16 }
+    });
+    await recordLoopMcpProof(sessionId, 'g-loop-blocked-ack');
+    await goal.acceptGoalReplyNow({
+      conversationId, sessionId, replyId: 'loop-blocked-source', turnId: 'g-loop-blocked-ack', eventSeq: 7, blocked: false
+    });
+    globalThis.fetch = (async () => decision('blocked')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId, turnId: 'g-loop-blocked-ack' });
+    const view = await settled(conversationId);
+    expect(view.stage).toBe('blocked');
+    expect(goal.goalPendingReplyFor(conversationId)).not.toBeNull();
+
+    expect(goal.ackGoalDraft(conversationId, view.token)).toBe(true);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    expect(goal.goalViewFor(conversationId)).toBeNull();
   });
 
   it('keeps a chat’s own goal in front of the loop', async () => {
@@ -2466,7 +2563,7 @@ describe('the loop that never stops', () => {
     // Stopping is available again, and it was asked exactly once.
     expect(view.stage).toBe('no-reply');
     expect(body.messages[0].content).toBe(goal.goalObjectivePrompt());
-    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['stop', 'continue']);
+    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['stop', 'blocked', 'continue']);
   });
 
   /**

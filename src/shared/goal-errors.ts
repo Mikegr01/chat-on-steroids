@@ -28,6 +28,7 @@ const explanations: Readonly<Record<string, string>> = {
   session_not_recorded: 'The app has no recorded history for this chat. Enable recording and send a message before using automatic continuation.',
   no_conversation: 'No recorded conversation is available to continue. Send a task first.',
   no_objective: 'No task was provided. Enter a task before starting Goal/Loop.',
+  goal_blocked: 'The task is blocked because a required input or resource is unavailable. Nothing was sent.',
   nothing_to_open_with: 'The helper did not produce an opening message. Make the task more specific and try again.',
   loop_stop_refused: 'The helper kept choosing to stop instead of writing a Loop continuation. Review the Loop instructions or choose another helper model.',
   goal_marker_missing: 'The answer is missing the completion marker required by offline Goal templates. Check the template instructions or choose another continuation source.',

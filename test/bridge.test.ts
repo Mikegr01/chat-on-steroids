@@ -12151,6 +12151,109 @@ describe('the goal loop over the bridge', () => {
     } finally { globalThis.fetch = realFetch; }
   });
 
+  it.each([
+    { action: 'stop' as const, stage: 'no-reply' as const },
+    { action: 'blocked' as const, stage: 'blocked' as const }
+  ])('keeps acknowledged $stage terminal state renderer-only while activity stays spent', async ({ action, stage }) => {
+    await pair();
+    const goal = await import('../src/main/goal.js');
+    const previous = getConfig();
+    const chat = `cafe0195-0000-4000-8000-0000000000${stage === 'blocked' ? '96' : '95'}`;
+    const session = await createSession({ title: `acked ${stage}`, conversationId: chat });
+    const { appendEvent } = await import('../src/main/session/store.js');
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: Date.now(),
+      message: { text: 'Finish the task', chars: 15, truncated: false } });
+    await saveConfig({ ...previous, goal: { ...previous.goal, enabled: true, backend: 'api', mode: 'goal' } });
+    await setSecret('openRouterApiKey', 'test-goal-terminal-key');
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ action, reply: '' }) } }] })) as never;
+    try {
+      await goal.setGoalSwitchNow(chat, 'goal', true);
+      const draft = goal.startGoalDraft({ conversationId: chat, sessionId: session.id, turnId: `terminal-${stage}` });
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe(stage));
+      expect((await sessionControlsFor(session.id)).goalDraft).toMatchObject({ stage });
+
+      expect(await goal.ackGoalDraftNow(chat, draft.token)).toBe(true);
+      expect(goal.goalViewFor(chat)).toBeNull();
+      expect((await sessionControlsFor(session.id)).goalDraft).toMatchObject({ stage });
+
+      const activity = await request('GET', `/activity?conversationId=${chat}`);
+      expect(activity.body.goal.draft).toBeNull();
+      expect(activity.body.goal.reply).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+      await setSecret('openRouterApiKey', '');
+      await saveConfig(previous);
+      goal.resetGoalStateForTests();
+    }
+  });
+
+  it('replaces or clears acknowledged terminal presentation when newer Goal work or Off takes ownership', async () => {
+    const goal = await import('../src/main/goal.js');
+    const previous = getConfig();
+    const chat = 'cafe0197-0000-4000-8000-000000000097';
+    const session = await createSession({ title: 'terminal replacement', conversationId: chat });
+    const { appendEvent } = await import('../src/main/session/store.js');
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: Date.now(),
+      message: { text: 'Finish the first task', chars: 21, truncated: false } });
+    await saveConfig({ ...previous, goal: { ...previous.goal, enabled: true, backend: 'api', mode: 'goal' } });
+    await setSecret('openRouterApiKey', 'test-goal-terminal-key');
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => Response.json({ choices: [{ message: { content: '{"action":"stop","reply":""}' } }] })) as never;
+    try {
+      await goal.setGoalSwitchNow(chat, 'goal', true);
+      const first = goal.startGoalDraft({ conversationId: chat, sessionId: session.id, turnId: 'terminal-first' });
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('no-reply'));
+      await goal.ackGoalDraftNow(chat, first.token);
+      expect((await sessionControlsFor(session.id)).goalDraft).toMatchObject({ stage: 'no-reply' });
+
+      globalThis.fetch = vi.fn(async () => Response.json({ choices: [{ message: { content: '{"action":"continue","reply":"Run the next check"}' } }] })) as never;
+      goal.startGoalDraft({ conversationId: chat, sessionId: session.id, turnId: 'terminal-newer' });
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('ready'));
+      expect((await sessionControlsFor(session.id)).goalDraft).toMatchObject({ stage: 'ready' });
+
+      const ready = goal.goalViewFor(chat)!;
+      await goal.ackGoalDraftNow(chat, ready.token);
+      await goal.setGoalSwitchNow(chat, 'goal', false);
+      await goal.setGoalReplyActiveNow(chat, false);
+      expect((await sessionControlsFor(session.id)).goalDraft).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      await setSecret('openRouterApiKey', '');
+      await saveConfig(previous);
+      goal.resetGoalStateForTests();
+    }
+  });
+
+  it('clears acknowledged terminal presentation when the saved Goal task is replaced', async () => {
+    const goal = await import('../src/main/goal.js');
+    const previous = getConfig();
+    const chat = 'cafe0198-0000-4000-8000-000000000098';
+    const session = await createSession({ title: 'terminal task replacement', conversationId: chat });
+    const { appendEvent } = await import('../src/main/session/store.js');
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: Date.now(),
+      message: { text: 'Finish the original task', chars: 24, truncated: false } });
+    await saveConfig({ ...previous, goal: { ...previous.goal, enabled: true, backend: 'api', mode: 'goal' } });
+    await setSecret('openRouterApiKey', 'test-goal-terminal-key');
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({ choices: [{ message: { content: '{"action":"stop","reply":""}' } }] })) as never;
+    try {
+      await setSessionObjective(session.id, 'Original saved Goal', 'goal');
+      const draft = goal.startGoalDraft({ conversationId: chat, sessionId: session.id, turnId: 'terminal-replaced-task' });
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('no-reply'));
+      await goal.ackGoalDraftNow(chat, draft.token);
+      expect((await sessionControlsFor(session.id)).goalDraft).toMatchObject({ stage: 'no-reply' });
+
+      await setSessionObjective(session.id, 'Replacement saved Goal', 'goal');
+      expect((await sessionControlsFor(session.id)).goalDraft).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      await setSecret('openRouterApiKey', '');
+      await saveConfig(previous);
+      goal.resetGoalStateForTests();
+    }
+  });
+
   it('withholds a ready activity draft revoked while its authority read is paused', async () => {
     await pair();
     const chat = 'cafe0092-0000-4000-8000-000000000092';

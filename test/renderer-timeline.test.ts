@@ -7,6 +7,7 @@ import { prependUserPrompt } from '../src/shared/user-prompt.js';
 import type { Handoff, SessionEvent, SessionSummary } from '../src/shared/session.js';
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import type { LocalProject } from '../src/shared/projects.js';
+import type { AppApi } from '../src/preload/index.js';
 vi.mock('../src/renderer/workspace-terminal.js', () => ({ createWorkspaceTerminal: () => ({
   update: vi.fn(), show: vi.fn(), hide: vi.fn(), hasTabs: () => false,
   tabs: () => [], newTab: () => null, selectTab: vi.fn(), closeTab: vi.fn()
@@ -3497,6 +3498,28 @@ it('renders existing-chat Goal draft stages from main controls without starting 
   expect(row.textContent).not.toContain('no_api_key');
   expect(row.getAttribute('aria-busy')).toBe('false');
   expect(opening).not.toHaveBeenCalled();
+});
+
+it.each([
+  { stage: 'no-reply', text: 'Goal reached' },
+  { stage: 'blocked', text: 'Task could not continue' }
+] as const)('renders acknowledged terminal Goal presentation as $text', async ({ stage, text }) => {
+  const { w, append } = await boot([]);
+  const api = (w as typeof w & { api: AppApi }).api;
+  const original = api.getSessionControls;
+  api.getSessionControls = async (id: string) => {
+    const current = await original(id);
+    if (!current.ok) return current;
+    return { ok: true, data: { ...current.data,
+      automation: 'goal' as const, goalDraft: { stage, model: 'fixture', text: '', error: null } } };
+  };
+
+  await append([]);
+  const row = w.document.getElementById('goalLifecycle')!;
+  expect(row.hidden).toBe(false);
+  expect(row.textContent).toContain(text);
+  expect(row.textContent).not.toContain('Pursuing goal');
+  expect(row.getAttribute('aria-busy')).toBe('false');
 });
 
 it('shows the immediate recovery deadline before a draft exists and clears it on fresh work', async () => {

@@ -2018,6 +2018,10 @@
         detail: t('content_turn_chatgpt_interrupted', 'ChatGPT marked the turn interrupted')
       };
     }
+    // ChatGPT's native extended-processing notice is explicitly nonterminal. It can outlive
+    // the Stop control and is neither assistant-authored prose nor a provider failure. Use the
+    // same DOM-adapter classifier as presentation so lifecycle and UI cannot disagree about it.
+    if (turn && CLF_DOM.platformDelay(turn)) return { outcome: 'unknown', reason: 'platform_delay' };
     // Degraded fallback only. If the MAIN-world Fiber helper has ever answered on this page,
     // its end_turn bit is the authority on successful completion and mere visible prose is
     // never enough to close a quiet turn: interim commentary is public assistant prose too.
@@ -4447,16 +4451,51 @@
       }
     }
     // ChatGPT's own message model is stronger completion evidence than the renderer's Stop
-    // button. If the final assistant message says `end_turn:true`, close the exact local
-    // generation even if a stale Stop control remains mounted. Final message/activity
-    // revisions above have already been emitted, so do not trigger a second Fiber final pass.
+    // button, but `endMessageId` can lead the actual terminal payload while one response is
+    // still entering tool work. Closing on that transient pointer permanently spent the local
+    // turn before its later calls/final arrived. Require the named terminal message (or its
+    // finished image) in this same accepted descriptor. Temporary decision helpers retain
+    // their separate accepted-user owner and deliberately support terminal-before-body.
+    const activeFiberTurn = activeTurnIndex >= 0 ? answer.turns[activeTurnIndex] : null;
+    const activeEndMessageId = activeFiberTurn?.endMessageId || null;
+    // Presence in the current descriptor is not enough to make a terminal payload current.
+    // Live 2026-10-01: React briefly reused the prior Loop turn's completed assistant payload
+    // inside the newly-opened exchange. That old payload satisfied endMessageId+message and
+    // closed the new local turn 30ms after turn_start; its real MCP call arrived 3.6s later
+    // without a turn id. The canonical transcript/media caches already carry the stronger
+    // fact we need: which local generation first owned this exact provider payload. Reuse that
+    // identity boundary here. A payload owned by another generation (or made ambiguous by two
+    // positive owners) may still render, but it cannot spend the current lifecycle.
+    const activeTerminalMessage = activeEndMessageId ? (activeFiberTurn?.messages || []).find(message =>
+      message.rawMessageId === activeEndMessageId || message.messageId === activeEndMessageId) : null;
+    const activeTerminalMessageRecord = activeTerminalMessage
+      ? messagesReported.get(activeTerminalMessage.messageId)
+      : null;
+    const activeTerminalTextOwned = Boolean(
+      activeTerminalMessage &&
+      activeTerminalMessageRecord?.owner === activeLocalTurnId &&
+      activeTerminalMessageRecord.conflicted !== true
+    );
+    const activeTerminalImage = activeEndMessageId ? (activeFiberTurn?.images || []).find(image =>
+      image.messageId === activeEndMessageId && image.providerStatus === 'finished_successfully') : null;
+    const activeTerminalImageRecord = activeTerminalImage
+      ? nativeImagesReported.get(nativeImageKey(activeTerminalImage))
+      : null;
+    const activeTerminalImageOwned = Boolean(
+      activeTerminalImage &&
+      activeTerminalImageRecord?.owner === activeLocalTurnId &&
+      activeTerminalImageRecord.conflicted !== true
+    );
+    const activeTerminalPayload = Boolean(activeEndMessageId &&
+      (activeTerminalTextOwned || activeTerminalImageOwned));
     if (
       generating &&
       activeTurnIndex >= 0 &&
       activeLocalTurnId === turnId &&
-      Boolean(answer.turns[activeTurnIndex]?.endMessageId)
+      activeEndMessageId &&
+      (activeTerminalPayload || (desktopDecision && desktopDecision.onTarget()))
     ) {
-      fiberTerminalMessageId = answer.turns[activeTurnIndex].endMessageId;
+      fiberTerminalMessageId = activeEndMessageId;
       const ended = generationTurn();
       if (ended) {
         // Native completion resolves transport uncertainty even when its old
@@ -8331,6 +8370,15 @@
               : 0;
       return { stage, detail: summary?.detail || '', body: '', kind: 'compact', steps: COMPACT_STEPS, at, done: false };
     }
+    if (input.platformDelay) return {
+      stage: t('content_chatgpt_platform_delay', 'ChatGPT is still processing'),
+      detail: t(
+        'content_chatgpt_platform_delay_detail',
+        'OpenAI is taking longer than usual to produce this response. No action has been replayed.'
+      ),
+      body: '',
+      kind: 'wait'
+    };
     const goalView = goalStageView(goal);
     if (goalView) return goalView;
     const now = input.now ?? Date.now();
@@ -8494,6 +8542,15 @@
         ...bar(2, true)
       };
     }
+    if (goal.phase === 'blocked') {
+      return {
+        stage: t('content_goal_loop_stopped', 'The goal loop stopped'),
+        detail: t('content_goal_nothing_sent', 'nothing was sent'),
+        body: '',
+        kind: 'goal-error',
+        ...bar(2, true)
+      };
+    }
     if (goal.phase === 'settling' || (!draft && goal.wait)) {
       const wait = goal.wait;
       const seconds = wait?.until ? Math.max(0, Math.ceil((wait.until - Date.now()) / 1000)) : 0;
@@ -8544,6 +8601,15 @@
         detail: t('content_goal_nothing_sent', 'nothing was sent'),
         body: '',
         kind: 'goal-done',
+        ...bar(2, true)
+      };
+    }
+    if (draft.stage === 'blocked') {
+      return {
+        stage: t('content_goal_loop_stopped', 'The goal loop stopped'),
+        detail: t('content_goal_nothing_sent', 'nothing was sent'),
+        body: '',
+        kind: 'goal-error',
         ...bar(2, true)
       };
     }
@@ -8745,6 +8811,7 @@
       job, progress: operationProgress, changedAt: lastChangeAt,
       summary: compactionSummaryProgress(),
       generating: generating && CLF_DOM.generating(),
+      platformDelay: CLF_DOM.platformDelay(currentAssistantTurn()),
       goal: goalConfig
         ? { ...goalConfig, phase: goalPhase, error: goalError, retryMs: goalRetryWaitMs, draft: goalDraft, opening }
         : null
@@ -10198,6 +10265,12 @@
       // That is the loop ending the way it is meant to, not a failure.
       goalDraft = null;
       setGoalPhase('done');
+      await ask({ type: 'goal_ack', conversationId, token: draft.token }).catch(() => undefined);
+      return;
+    }
+    if (draft.stage === 'blocked') {
+      goalDraft = null;
+      setGoalPhase('blocked');
       await ask({ type: 'goal_ack', conversationId, token: draft.token }).catch(() => undefined);
       return;
     }
@@ -12568,6 +12641,7 @@
     globalThis.CLF_TEST_HOOK({
       controlState,
       stageView,
+      platformDelay: () => CLF_DOM.platformDelay(currentAssistantTurn()),
       goalStageView,
       settingsView,
       toggleMenu,

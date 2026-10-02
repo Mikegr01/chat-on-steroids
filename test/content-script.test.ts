@@ -83,6 +83,8 @@ interface Hook {
   readDescriptor(raw: unknown): Descriptor | null;
   controlState(input: Record<string, unknown>): { mode: string; label: string; hint: string; action: string };
   stageView(input: Record<string, unknown>): StagePanelView | null;
+  /** Exact native ChatGPT platform-delay notice for the current assistant turn, if present. */
+  platformDelay(): boolean;
   /** The goal loop's half of the same panel, testable without a job in the way. */
   goalStageView(goal: Record<string, unknown> | null): StagePanelView | null;
   settingsView(input: Record<string, unknown>): {
@@ -7462,6 +7464,67 @@ describe('a stop button that goes missing while the turn is still running', () =
     expect(startedCompactions(live)).toHaveLength(0);
   });
 
+  it('presents ChatGPT platform delay distinctly and resumes only on the real final answer', async () => {
+    live = await harness();
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'turn-platform-delay', []);
+    live.hook.observe();
+    await settle();
+    const opened = emitted(live.sent, 'turn_start')[0]!.event.turnId as string;
+
+    const notice = live.document.createElement('div');
+    notice.textContent =
+      'Our systems are thinking a bit more about this request before responding. ' +
+      'You can retry with a faster model for a quicker response.';
+    section.append(notice);
+    live.advance(61_000);
+    live.hook.observe();
+    await settle();
+
+    expect(live.hook.platformDelay()).toBe(true);
+    expect(live.hook.stageView({
+      now: live.window.Date.now(),
+      changedAt: 0,
+      generating: true,
+      platformDelay: true,
+      progress: { tools: { count: 1, since: 0 } }
+    })).toMatchObject({
+      stage: 'ChatGPT is still processing',
+      detail: expect.stringContaining('taking longer than usual')
+    });
+    live.hook.injectStage();
+    expect(live.document.querySelector('.clf-stage')?.textContent).toContain('ChatGPT is still processing');
+    expect(live.document.querySelector('.clf-stage')?.textContent).not.toContain('Waiting for a local tool');
+    expect(emitted(live.sent, 'assistant_message')).toHaveLength(0);
+    expect(emitted(live.sent, 'chat_error')).toHaveLength(0);
+    expect(emitted(live.sent, 'turn_end')).toHaveLength(0);
+
+    notice.remove();
+    expect(live.hook.platformDelay()).toBe(false);
+    prose(live.document, section, 'platform-delay-final', 'The delayed answer is complete.');
+    await bindFiberTurns([{ section, turn: {
+      turnId: 'turn-platform-delay',
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      endMessageId: 'platform-delay-final',
+      calls: [],
+      messages: [{
+        role: 'assistant',
+        messageId: 'platform-delay-final',
+        rawMessageId: 'platform-delay-final',
+        rawText: 'The delayed answer is complete.',
+        renderedHtml: '<p>The delayed answer is complete.</p>'
+      }],
+      activities: []
+    } }]);
+    await live.hook.flush();
+    await settle();
+
+    expect(emitted(live.sent, 'turn_end').filter(entry =>
+      entry.event.turnId === opened && entry.event.outcome === 'completed')).toHaveLength(1);
+    live.hook.injectStage();
+    expect(live.document.querySelector('.clf-stage')?.textContent || '').not.toContain('ChatGPT is still processing');
+  });
+
   it('does not call interim assistant prose completed during a long stop-control dropout', async () => {
     live = await harness();
     startGenerating(live.document);
@@ -8243,18 +8306,75 @@ describe('a stop button that goes missing while the turn is still running', () =
     ]);
   });
 
-  it('closes an image-only answer from exact Fiber terminal evidence without authored text', async () => {
+  it('does not let a prior terminal payload close the next local turn before its tool work', async () => {
     live = await harness();
     startGenerating(live.document);
-    assistantTurn(live.document, 'turn-image-only', []);
+    userTurn(live.document, 'stale-terminal-q1', 'first question');
+    const first = assistantTurn(live.document, 'stale-terminal-a1', []);
     live.hook.observe(); await settle();
-    await replyFiber([], [{ turnId: 'turn-image-only', conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      endMessageId: 'image-final', calls: [], messages: [], activities: [] }]);
+    const firstLocal = emitted(live.sent, 'turn_start').at(-1)!.event.turnId as string;
+    const oldFinal = {
+      role: 'assistant', messageId: 'stale-terminal-final', rawMessageId: 'stale-terminal-final',
+      stable: true, rawText: 'First answer.', renderedHtml: '<p>First answer.</p>'
+    };
+    await bindFiberTurns([{ section: first, turn: {
+      turnId: 'stale-terminal-a1', endMessageId: 'stale-terminal-final', calls: [], activities: [], messages: [oldFinal]
+    } }]);
+    await live.hook.flush(); await settle();
+    expect(emitted(live.sent, 'turn_end').map(entry => entry.event)).toEqual([
+      expect.objectContaining({ turnId: firstLocal, outcome: 'completed' })
+    ]);
+
+    userTurn(live.document, 'stale-terminal-q2', 'second question');
+    startGenerating(live.document);
+    const second = assistantTurn(live.document, 'stale-terminal-a2', []);
+    live.hook.observe(); await settle();
+    const secondLocal = emitted(live.sent, 'turn_start').at(-1)!.event.turnId as string;
+    expect(secondLocal).not.toBe(firstLocal);
+
+    // Live 2026-10-01: the new mounted exchange briefly inherited the prior final payload.
+    // That exact old payload must remain owned by the first local generation and cannot spend
+    // the newly-opened turn merely because the current descriptor points at it as endMessageId.
+    await bindFiberTurns([{ section: second, turn: {
+      turnId: 'stale-terminal-a2', endMessageId: 'stale-terminal-final', calls: [], activities: [], messages: [oldFinal]
+    } }]);
+    await live.hook.flush(); await settle();
+    expect(emitted(live.sent, 'turn_end')).toHaveLength(1);
+
+    const call = { messageId: 'stale-terminal-call', tool: 'exec_command', order: 0, answered: true,
+      requestId: 'stale-terminal-request' };
+    await bindFiberTurns([{ section: second, turn: {
+      turnId: 'stale-terminal-a2', endMessageId: null, calls: [call], activities: [], messages: []
+    } }]);
+    await live.hook.flush(); await settle();
+
+    prose(live.document, second, 'stale-terminal-real-final', 'Second answer after the tool.');
+    const realFinal = {
+      role: 'assistant', messageId: 'stale-terminal-real-final', rawMessageId: 'stale-terminal-real-final',
+      stable: true, rawText: 'Second answer after the tool.', renderedHtml: '<p>Second answer after the tool.</p>'
+    };
+    await bindFiberTurns([{ section: second, turn: {
+      turnId: 'stale-terminal-a2', endMessageId: 'stale-terminal-real-final', calls: [call], activities: [], messages: [realFinal]
+    } }]);
+    await live.hook.flush(); await settle();
+
+    expect(emitted(live.sent, 'turn_end').map(entry => entry.event)).toEqual([
+      expect.objectContaining({ turnId: firstLocal, outcome: 'completed' }),
+      expect.objectContaining({ turnId: secondLocal, outcome: 'completed' })
+    ]);
+  });
+
+  it('does not close an image-only answer from a bare Fiber terminal pointer without terminal payload', async () => {
+    live = await harness();
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'turn-image-only', []);
+    live.hook.observe(); await settle();
+    await bindFiberTurns([{ section, turn: { turnId: 'turn-image-only', conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      endMessageId: 'image-final', calls: [], messages: [], activities: [] } }]);
     await settle(); await live.hook.flush(); await settle();
     for (let tick = 0; tick < 3; tick++) { live.hook.observe(); await settle(); }
     const ends = emitted(live.sent, 'turn_end').map(entry => entry.event);
-    expect(ends).toHaveLength(1);
-    expect(ends[0]!.outcome).toBe('completed');
+    expect(ends).toHaveLength(0);
     expect(live.sent.some(message => message.type === 'reload_owned_chat')).toBe(false);
   });
 
@@ -16464,6 +16584,48 @@ describe('the goal loop', () => {
     await settleTurn(harnessed);
   }
 
+  it('keeps a Goal continuation turn open when an early Fiber end is followed by same-turn work', async () => {
+    live = await harness(`https://chatgpt.com/c/${CHAT}`, goalReplies());
+    await live.hook.pullActivity();
+    userTurn(live.document, 'continued-goal-user', 'Continue with the verification.', { sent: false });
+
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'continued-goal-turn', []);
+    live.hook.observe();
+    await settle();
+    const opened = emitted(live.sent, 'turn_start').at(-1)!.event.turnId as string;
+
+    // Live failure shape: the page model briefly advertises end_turn before the response has
+    // produced its tool work or final public assistant message. The terminal id alone must not
+    // spend this generation; later evidence still belongs to the exact same local turn.
+    await bindFiberTurns([{ section, turn: {
+      turnId: 'continued-goal-turn', endMessageId: 'continued-final', calls: [], messages: [], activities: []
+    } }]);
+    expect(emitted(live.sent, 'turn_end').filter(entry => entry.event.turnId === opened)).toHaveLength(0);
+
+    await bindFiberTurns([{ section, turn: {
+      turnId: 'continued-goal-turn', endMessageId: null, calls: [], messages: [],
+      activities: [{ messageId: 'continued-tool-work', label: 'Read package.json', order: 1 }]
+    } }]);
+    expect(emitted(live.sent, 'page_tool').filter(entry => entry.event.turnId === opened)).toHaveLength(1);
+    expect(emitted(live.sent, 'turn_start').filter(entry => entry.event.turnId === opened)).toHaveLength(1);
+
+    prose(live.document, section, 'continued-final', 'Verification complete.');
+    stopGenerating(live.document);
+    await bindFiberTurns([{ section, turn: {
+      turnId: 'continued-goal-turn', endMessageId: 'continued-final', calls: [],
+      messages: [{ role: 'assistant', messageId: 'continued-final', rawMessageId: 'continued-final',
+        rawText: 'Verification complete.', renderedHtml: '<p>Verification complete.</p>', order: 2 }],
+      activities: [{ messageId: 'continued-tool-work', label: 'Read package.json', order: 1 }]
+    } }]);
+    live.hook.observe();
+    await settle(800);
+
+    expect(emitted(live.sent, 'turn_end').filter(entry => entry.event.turnId === opened && entry.event.outcome === 'completed')).toHaveLength(1);
+    expect([...live.document.querySelectorAll('[data-message-author-role="user"]')].filter(message =>
+      message.textContent?.includes('Continue with the verification.'))).toHaveLength(1);
+  });
+
   const drafts = (harnessed: Harness): Array<Record<string, any>> =>
     harnessed.sent.filter((message) => message.type === 'goal_draft');
   const acks = (harnessed: Harness): Array<Record<string, any>> =>
@@ -17358,6 +17520,72 @@ describe('the goal loop', () => {
 
     expect(drafts(live)).toHaveLength(1);
     expect(drafts(live)[0]).toMatchObject({ conversationId: CHAT, turnId: expect.any(String) });
+  });
+
+  it('keeps Goal waiting through a native platform delay and resumes once on the real final', async () => {
+    let requested = 0;
+    let sends = () => 0;
+    live = await harness(
+      `https://chatgpt.com/c/${CHAT}`,
+      {
+        ...goalReplies(),
+        goal_draft: () => {
+          requested += 1;
+          return goalReplies().goal_draft();
+        }
+      },
+      (document) => { sends = watchSend(document); }
+    );
+    await live.hook.pullActivity();
+
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'goal-platform-delay', []);
+    live.hook.observe();
+    await settle();
+    const opened = emitted(live.sent, 'turn_start').at(-1)!.event.turnId as string;
+
+    const notice = live.document.createElement('div');
+    notice.textContent =
+      'Our systems are thinking a bit more about this request before responding. ' +
+      'You can retry with a faster model for a quicker response.';
+    section.append(notice);
+    live.advance(61_000);
+    live.hook.observe();
+    await settle(300);
+
+    expect(live.hook.platformDelay()).toBe(true);
+    expect(emitted(live.sent, 'turn_end').filter(entry => entry.event.turnId === opened)).toHaveLength(0);
+    expect(requested).toBe(0);
+    expect(drafts(live)).toHaveLength(0);
+    expect(sends()).toBe(0);
+
+    notice.remove();
+    prose(live.document, section, 'goal-platform-delay-final', 'The delayed Goal answer is complete.');
+    stopGenerating(live.document);
+    await bindFiberTurns([{ section, turn: {
+      turnId: 'goal-platform-delay',
+      conversationId: CHAT,
+      endMessageId: 'goal-platform-delay-final',
+      calls: [],
+      messages: [{
+        role: 'assistant',
+        messageId: 'goal-platform-delay-final',
+        rawMessageId: 'goal-platform-delay-final',
+        rawText: 'The delayed Goal answer is complete.',
+        renderedHtml: '<p>The delayed Goal answer is complete.</p>'
+      }],
+      activities: []
+    } }]);
+    await live.hook.flush();
+    live.advance(live.hook.GOAL_STABLE_MS);
+    await settle(900);
+
+    expect(live.hook.platformDelay()).toBe(false);
+    expect(emitted(live.sent, 'turn_end').filter(entry =>
+      entry.event.turnId === opened && entry.event.outcome === 'completed')).toHaveLength(1);
+    expect(live.sent.filter(message => message.type === 'focus_tab')).toHaveLength(1);
+    expect(requested).toBe(0);
+    expect(sends()).toBe(0);
   });
 
   /**
@@ -18255,6 +18483,26 @@ describe('the goal loop', () => {
     // turn rather than just its current node, so the same card must stay gone.
     live.hook.injectStage();
     expect(live.document.querySelector('.clf-stage')).toBeNull();
+  });
+
+  it('sends nothing and reports a blocked Goal distinctly', async () => {
+    let sends = () => 0;
+    live = await harness(
+      `https://chatgpt.com/c/${CHAT}`,
+      liveFeed(readyDraft('', 'blocked')).replies,
+      (document) => { sends = watchSend(document); }
+    );
+    await live.hook.pullActivity();
+    await settle();
+
+    expect(sends()).toBe(0);
+    expect(composerText(live.document)).toBe('');
+    expect(new Set(acks(live).map((message) => message.token)).size).toBe(1);
+    expect(live.hook.goalStageView({ phase: 'blocked', error: '', model: MODEL, draft: null })).toMatchObject({
+      stage: 'The goal loop stopped',
+      detail: 'nothing was sent',
+      kind: 'goal-error'
+    });
   });
 
   it('removes a terminal Goal card when the user continues the same chat manually', async () => {

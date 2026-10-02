@@ -51,6 +51,12 @@ describe('Goal failure explanations', () => {
     expect(goalErrorMessage('future_goal_error')).toContain('Check the app diagnostics');
   });
 
+  it('explains an opening-time concrete blocker without exposing helper reasoning', () => {
+    expect(goalErrorMessage('goal_blocked')).toBe(
+      'The task is blocked because a required input or resource is unavailable. Nothing was sent.'
+    );
+  });
+
   it('keeps every fixed Goal explanation localizable in every renderer catalog', () => {
     const catalogs = { es, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, tr, fr } as const;
     const codes = [
@@ -59,7 +65,7 @@ describe('Goal failure explanations', () => {
       'unknown_model', 'invalid_provider', 'rate_limited', 'timeout_or_cancelled', 'request_failed',
       'goal_browser_busy', 'goal_browser_cancelled', 'goal_browser_send_failed', 'goal_browser_send_unconfirmed',
       'goal_owned_elsewhere', 'goal_final_not_confirmed', 'astra_finish_only', 'goal_disabled', 'goal_worker_chat',
-      'conversation_superseded', 'chat_blocked', 'session_not_recorded', 'no_conversation', 'no_objective',
+      'conversation_superseded', 'chat_blocked', 'session_not_recorded', 'no_conversation', 'no_objective', 'goal_blocked',
       'nothing_to_open_with', 'loop_stop_refused', 'goal_marker_missing', 'goal_reply_not_durable',
       'goal_ack_not_durable', 'goal_switch_not_durable', 'goal_objective_not_durable',
       'invalid_goal_decision_json', 'provider_completion_error'

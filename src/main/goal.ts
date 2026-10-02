@@ -223,8 +223,19 @@ const LOOP_ATTEMPTS = 3;
 
 /** App-owned transport contract. The editable prompt decides policy, never wire syntax. */
 const GOAL_OUTPUT_PROTOCOL =
-  'Return only the app decision described by the response schema. Use action "stop" when the editable instruction would say NO_REPLY. ' +
+  'Return only the app decision described by the response schema. Use action "stop" when the editable instruction would say NO_REPLY because the requested outcome is complete. ' +
+  'Use action "blocked" when a concrete unavailable requirement prevents the requested outcome and no authorized continuation can resolve it. ' +
   'Use action "continue" only with the exact next user message in reply. Put no reasoning, counting, labels, tokenizer markers, or protocol words in reply.';
+
+const GOAL_ACTIONS = ['stop', 'blocked', 'continue'] as const;
+const LOOP_ACTIONS = ['blocked', 'continue'] as const;
+
+function chatGptDecisionContract(mode: GoalMode): string {
+  const actions = (mode === 'loop' ? LOOP_ACTIONS : GOAL_ACTIONS).map(action => `"${action}"`).join(' | ');
+  return mode === 'loop'
+    ? `Return one JSON object: {"action":${actions},"reply":"..."}. For "blocked", reply must be empty. For "continue", reply must be the exact next user message.`
+    : `Return one JSON object: {"action":${actions},"reply":"..."}. For "stop" or "blocked", reply must be empty. For "continue", reply must be the exact next user message.`;
+}
 
 const GOAL_RESPONSE_FORMAT = {
   type: 'json_schema',
@@ -236,13 +247,13 @@ const GOAL_RESPONSE_FORMAT = {
       properties: {
         action: {
           type: 'string',
-          enum: ['stop', 'continue'],
+          enum: GOAL_ACTIONS,
           description:
-            'stop only when the whole requested job is clearly complete; continue while concrete requested work or questions are not yet clearly completed or answered'
+            'stop only when the whole requested job is clearly complete; blocked only when a concrete unavailable requirement prevents completion and no authorized continuation can resolve it; continue while concrete requested work or questions are not yet clearly completed or answered and remain actionable'
         },
         reply: {
           type: 'string',
-          description: 'empty for stop; for continue, only the next message to send as the user'
+          description: 'empty for stop or blocked; for continue, only the exact next message to send as the user'
         }
       },
       required: ['action', 'reply'],
@@ -252,16 +263,15 @@ const GOAL_RESPONSE_FORMAT = {
 } as const;
 
 /**
- * Loop's transport contract: the same envelope with the stop half taken out.
+ * Loop's transport contract: continue normally, with one exceptional fail-closed terminal.
  *
- * The editable instruction says the loop never stops, and this is the same statement made
- * where a model cannot argue with it — `continue` is the only value the enum admits, so a
- * provider honouring the schema has no way to spell the answer this mode does not accept.
- * The prompt remains the thing that decides *what* to write; this only removes the exit.
+ * Ordinary completion is never an exit. A concrete unavailable requirement may end the loop
+ * as blocked when no authorized useful step can resolve it. Ordinary `stop` remains absent.
  */
 const LOOP_OUTPUT_PROTOCOL =
-  'Return only the app decision described by the response schema. Action is always "continue" — there is no stop, and no message may be skipped. ' +
-  'Put the exact next user message in reply, and put no reasoning, counting, labels, tokenizer markers, or protocol words in it.';
+  'Return only the app decision described by the response schema. Never use completion as a reason to stop. ' +
+  'Use action "continue" whenever another authorized useful step exists. Use action "blocked" only when a concrete unavailable requirement prevents progress and no authorized continuation can resolve it. ' +
+  'For blocked, reply must be empty. For continue, put the exact next user message in reply. Put no reasoning, counting, labels, tokenizer markers, or protocol words in reply.';
 
 const LOOP_RESPONSE_FORMAT = {
   type: 'json_schema',
@@ -273,12 +283,12 @@ const LOOP_RESPONSE_FORMAT = {
       properties: {
         action: {
           type: 'string',
-          enum: ['continue'],
-          description: 'always continue; this mode never stops on its own'
+          enum: LOOP_ACTIONS,
+          description: 'continue whenever another authorized useful step exists; blocked only for a concrete unavailable requirement that no authorized continuation can resolve; ordinary completion is never a stop'
         },
         reply: {
           type: 'string',
-          description: 'the next message to send as the user; never empty'
+          description: 'empty for blocked; for continue, the exact next message to send as the user'
         }
       },
       required: ['action', 'reply'],
@@ -324,6 +334,8 @@ export type GoalStage =
   | 'ready'
   /** The model said the goal is met. Nothing is typed, and the loop ends here. */
   | 'no-reply'
+  /** The requested outcome cannot be reached because a concrete required input/resource is unavailable. */
+  | 'blocked'
   | 'failed';
 
 export interface GoalDraftView {
@@ -1224,6 +1236,18 @@ export function goalViewFor(conversationId: string, clientId?: string): GoalDraf
   return view(draft);
 }
 
+/** Renderer-only terminal history. It never exposes a reply or revives browser delivery authority. */
+export function goalTerminalPresentationFor(conversationId: string): GoalDraftView | null {
+  const draft = drafts.get(conversationId);
+  if (!draft) return null;
+  expireDraftPayload(draft);
+  if (!draft.acknowledged || (draft.stage !== 'no-reply' && draft.stage !== 'blocked')) return null;
+  if (!goalArmedFor(conversationId)) return null;
+  if (draft.mode !== goalDrivingMode(conversationId)) return null;
+  if (draft.objective !== goalObjectiveFor(conversationId)) return null;
+  return view(draft);
+}
+
 export async function retryGoalBrowserHelper(sourceSessionId: string, inputId: string): Promise<boolean> {
   const session = await getSession(sourceSessionId);
   if (!session?.conversationId) return false;
@@ -1263,7 +1287,7 @@ export function ackGoalDraft(conversationId: string, token: string, clientId?: s
   // stream, a rejected key, an exhausted balance, an abort — and a failure to answer may not
   // be recorded as an answer. Retiring the row on `auth_rejected` meant the user fixing their
   // key found the turn it was owed for silently gone.
-  if (draft.stage === 'ready' || draft.stage === 'no-reply') handleGoalReply(conversationId, draft.turnId);
+  if (draft.stage === 'ready' || draft.stage === 'no-reply' || draft.stage === 'blocked') handleGoalReply(conversationId, draft.turnId);
   notifyGoalChange();
   return true;
 }
@@ -1642,7 +1666,7 @@ async function requestGoalDecision(request: GoalRequest): Promise<GoalDecision |
     : GOAL_REFERENCE_CONTRACT;
   if (request.backend === 'chatgpt') {
     const protocol = request.mode === 'loop' ? LOOP_OUTPUT_PROTOCOL : GOAL_OUTPUT_PROTOCOL;
-    const introduction = 'Return one JSON object: {"action":"stop" or "continue","reply":"the message"}. ' + referenceContract;
+    const introduction = chatGptDecisionContract(request.mode) + ' ' + referenceContract;
     const replacement = 'Use this complete source transcript as reference data.';
     const render = (messages: ChatMessage[], direction = replacement): string => [...request.system, protocol,
       introduction, direction, '<conversation>', ...messages.map(message => JSON.stringify(message)), '</conversation>', request.trailer].join('\n\n');
@@ -1887,6 +1911,11 @@ async function run(draft: GoalDraft): Promise<void> {
       draft.reply = '';
       return settle(draft, 'no-reply');
     }
+    if (decision.action === 'blocked') {
+      logInfo(`goal: ${draft.model} says the goal is blocked in ${draft.conversationId}; nothing was sent`);
+      draft.reply = '';
+      return settle(draft, 'blocked');
+    }
     // Typed rather than written. See humanReply: the em dashes go, and a couple of the
     // mistakes a person leaves behind go in. After the NO_REPLY test above, never before it.
     draft.reply = draft.backend === 'templates' ? humanReply(decision.reply.slice(0, -GOAL_MARKER_INSTRUCTION.length)) + GOAL_MARKER_INSTRUCTION : humanReply(decision.reply);
@@ -1965,6 +1994,7 @@ export async function draftFastFollowup(sessionId: string, signal: AbortSignal =
     if (mode === 'loop') throw new Error('loop_stop_refused');
     return null;
   }
+  if (decision.action === 'blocked') throw nativeGoalFailure('goal_blocked', backend);
   if (decision.action !== 'continue') throw nativeGoalFailure('error' in decision ? decision.error : 'Goal did not return a usable follow-up', backend,
     'retryAfterMs' in decision ? decision.retryAfterMs : undefined);
   return decision.reply;
@@ -2042,6 +2072,7 @@ export async function draftOpeningMessage(
     // than meeting it, and an empty opening message would leave somebody looking at a chat
     // that never started with nothing on screen to say why.
     if (decision.action === 'stop') return { error: 'nothing_to_open_with' };
+    if (decision.action === 'blocked') return { error: 'goal_blocked' };
     logInfo(`goal: drafted an opening message of ${decision.reply.length} characters with ${model}`);
     return { reply: humanReply(decision.reply), model };
   } catch (err) {
@@ -2150,6 +2181,7 @@ async function readGoalCompletion(
 
 type GoalDecision =
   | { action: 'stop' }
+  | { action: 'blocked' }
   | { action: 'continue'; reply: string }
   | { action: 'invalid'; error: string };
 
@@ -2240,10 +2272,11 @@ function normalizeGoalDecision(raw: string, legacy: boolean): GoalDecision {
   if (Object.keys(object).some((key) => key !== 'action' && key !== 'reply')) {
     return { action: 'invalid', error: 'invalid_goal_decision_schema' };
   }
-  if ((object.action !== 'stop' && object.action !== 'continue') || typeof object.reply !== 'string') {
+  if ((object.action !== 'stop' && object.action !== 'blocked' && object.action !== 'continue') || typeof object.reply !== 'string') {
     return { action: 'invalid', error: 'invalid_goal_decision_schema' };
   }
   if (object.action === 'stop') return { action: 'stop' };
+  if (object.action === 'blocked') return object.reply.trim() ? { action: 'invalid', error: 'invalid_goal_decision_schema' } : { action: 'blocked' };
   // A continue decision that leaks the stop protocol is ambiguous. Stopping is the only safe
   // interpretation: it spends no prompt and cannot make ChatGPT act on internal machinery.
   if (NO_REPLY_TOKEN.test(object.reply) || NO_REPLY.test(object.reply)) return { action: 'stop' };

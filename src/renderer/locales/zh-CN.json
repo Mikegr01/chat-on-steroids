@@ -1517,6 +1517,7 @@
   "The continuation request timed out or was cancelled. Check the helper chat or provider status before trying again.": "继续请求超时或已取消。重试前请检查辅助聊天或提供者状态。",
   "The custom continuation endpoint is invalid. Check its URL in Settings; use HTTPS or a local HTTP endpoint.": "自定义继续端点无效。请在设置中检查其 URL；请使用 HTTPS 或本地 HTTP 端点。",
   "The helper did not produce an opening message. Make the task more specific and try again.": "辅助工具未生成开场消息。请让任务更具体后再试。",
+  "The task is blocked because a required input or resource is unavailable. Nothing was sent.": "由于所需的输入或资源不可用，任务已被阻止。未发送任何内容。",
   "The helper kept choosing to stop instead of writing a Loop continuation. Review the Loop instructions or choose another helper model.": "辅助工具一直选择停止，而不是编写 Loop 继续内容。请检查 Loop 指令，或选择其他辅助模型。",
   "The helper prompt could not be delivered to ChatGPT. Open the helper chat and check its composer or visible error before trying again.": "无法将辅助提示发送到 ChatGPT。重试前请打开辅助聊天，检查其输入框或可见错误。",
   "The helper prompt could not be delivered. {0}": "无法发送辅助提示。{0}",

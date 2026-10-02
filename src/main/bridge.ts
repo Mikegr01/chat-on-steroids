@@ -81,6 +81,7 @@ import {
   goalReplySourceTurn,
   consumeGoalReplyForInputNow,
   goalSwitchFor,
+  goalTerminalPresentationFor,
   goalViewFor,
   pendingGoalReplies,
   retireGoalDrafts,
@@ -1567,6 +1568,7 @@ export async function sessionControlsFor(sessionId: string): Promise<SessionCont
       live?.activeTurnId === session.activeTurnId)) ? session.activeTurnId : null;
   const finishHeld = !blocked && await sessionFinishHeld(sessionId, activeTurnId, id);
   const draft = goalViewFor(id);
+  const presentedDraft = draft ?? goalTerminalPresentationFor(id);
   const inputPolicy = await sessionInputPolicy(sessionId, sessionInputActivity(session));
   const plan = await readSessionPlan(sessionId);
   const finishWaiting = await sessionFinishWaiting(sessionId, activeTurnId, id);
@@ -1577,7 +1579,8 @@ export async function sessionControlsFor(sessionId: string): Promise<SessionCont
     canSendDirectly: !blocked && !!inputPolicy.directTurn,
     finishGoalDraft: getSessionFinishDraft(sessionId, activeTurnId),
     finishWaiting,
-    goalDraft: draft ? { stage: draft.stage, model: draft.model, text: draft.text.slice(-8000), error: draft.error } : null,
+    goalDraft: presentedDraft ? { stage: presentedDraft.stage, model: presentedDraft.model,
+      text: presentedDraft.text.slice(-8000), error: presentedDraft.error } : null,
     goalWait: !blocked && !draft && goalActiveFor(id) ? await goalWaitFor(id, sessionId) : null,
     stopPending: commands.some(c => c.spec.type === 'stop' && c.spec.sessionId === sessionId && c.spec.turnId === activeTurnId),
     objective: goalObjectiveFor(id),

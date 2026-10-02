@@ -135,6 +135,82 @@ async function settled(id: string) {
   return goal.goalViewFor(id)!;
 }
 describe('Goal decision backends', () => {
+  it('renders the ChatGPT Goal helper contract with stop, blocked, continue, and empty terminal replies', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'chatgpt' } });
+    browser.request.mockResolvedValueOnce('{"action":"stop","reply":""}');
+
+    expect(await goal.draftOpeningMessage('Finish this task', 'goal')).toEqual({ error: 'nothing_to_open_with' });
+
+    const prompt = browser.request.mock.calls[0]?.[0] as string;
+    expect(prompt).toContain('"action":"stop" | "blocked" | "continue"');
+    expect(prompt).toContain('For "stop" or "blocked", reply must be empty.');
+    expect(prompt).toContain('For "continue", reply must be the exact next user message.');
+  });
+
+  it('renders the ChatGPT Loop helper contract with blocked and continue only', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, loopBackend: 'chatgpt' } });
+    browser.request.mockResolvedValueOnce('{"action":"continue","reply":"Keep working"}');
+
+    expect(await goal.draftOpeningMessage('Keep working', 'loop')).toMatchObject({ reply: expect.any(String) });
+
+    const prompt = browser.request.mock.calls[0]?.[0] as string;
+    expect(prompt).toContain('"action":"blocked" | "continue"');
+    expect(prompt).not.toContain('"action":"stop" |');
+    expect(prompt).toContain('For "blocked", reply must be empty.');
+    expect(prompt).toContain('For "continue", reply must be the exact next user message.');
+  });
+
+  it('accepts blocked from the ChatGPT Goal helper without a continuation', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'chatgpt' } });
+    const id = 'chatgpt-goal-blocked';
+    const sessionId = await recording(id, 'A required file does not exist');
+    browser.request.mockResolvedValueOnce('{"action":"blocked","reply":""}');
+
+    goal.startGoalDraft({ conversationId: id, sessionId, turnId: 'goal-blocked-turn' });
+    expect(await settled(id)).toMatchObject({ stage: 'blocked', reply: '' });
+    expect(browser.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts blocked from the ChatGPT Loop helper without a continuation', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, mode: 'loop', loopBackend: 'chatgpt' } });
+    const id = 'chatgpt-loop-blocked';
+    const sessionId = await recording(id, 'A required file does not exist');
+    await goal.setGoalSwitchNow(id, 'loop', true);
+    await recordLoopMcpProof(sessionId, 'loop-blocked-turn');
+    browser.request.mockResolvedValueOnce('{"action":"blocked","reply":""}');
+
+    goal.startGoalDraft({ conversationId: id, sessionId, turnId: 'loop-blocked-turn' });
+    expect(await settled(id)).toMatchObject({ stage: 'blocked', reply: '' });
+    expect(browser.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a blocked ChatGPT helper decision that carries a reply', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'chatgpt' } });
+    const id = 'chatgpt-blocked-with-reply';
+    const sessionId = await recording(id, 'Blocked result');
+    browser.request.mockResolvedValueOnce('{"action":"blocked","reply":"synthetic explanation"}');
+
+    goal.startGoalDraft({ conversationId: id, sessionId, turnId: 'blocked-with-reply-turn' });
+    expect(await settled(id)).toMatchObject({ stage: 'failed', error: 'invalid_goal_decision_schema', reply: '' });
+  });
+
+  it('keeps normal ChatGPT Goal stop and Loop continue behavior', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'chatgpt', loopBackend: 'chatgpt' } });
+    const goalId = 'chatgpt-normal-goal-stop';
+    const goalSessionId = await recording(goalId, 'Finished');
+    browser.request.mockResolvedValueOnce('{"action":"stop","reply":""}');
+    goal.startGoalDraft({ conversationId: goalId, sessionId: goalSessionId, turnId: 'goal-stop-turn' });
+    expect(await settled(goalId)).toMatchObject({ stage: 'no-reply', reply: '' });
+
+    const loopId = 'chatgpt-normal-loop-continue';
+    const loopSessionId = await recording(loopId, 'More work remains');
+    await goal.setGoalSwitchNow(loopId, 'loop', true);
+    await recordLoopMcpProof(loopSessionId, 'loop-continue-turn');
+    browser.request.mockResolvedValueOnce('{"action":"continue","reply":"Run the next check"}');
+    goal.startGoalDraft({ conversationId: loopId, sessionId: loopSessionId, turnId: 'loop-continue-turn' });
+    expect(await settled(loopId)).toMatchObject({ stage: 'ready', reply: goal.humanReply('Run the next check') });
+  });
+
   it.each(['api', 'chatgpt'] as const)('sends canonical interim and corrections to the %s Loop without a final answer', async backend => {
     await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, loopBackend: backend } });
     await setSecret('openRouterApiKey', 'test-key');

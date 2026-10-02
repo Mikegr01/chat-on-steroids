@@ -66,6 +66,32 @@ var CLF_DOM = (() => {
   const text = (node, cap = 256_000) =>
     node ? (node.textContent || '').replace(/ /g, ' ').trim().slice(0, cap) : '';
 
+  const PLATFORM_DELAY_TEXT = 'Our systems are thinking a bit more about this request before responding.';
+
+  /**
+   * ChatGPT's native extended-processing notice for one assistant turn.
+   *
+   * This is page chrome, not assistant-authored prose. Keep the wording knowledge here with
+   * every other ChatGPT DOM dependency so lifecycle and presentation share one classifier.
+   * Authored markdown is removed before matching, so a user/model quoting the notice cannot
+   * hold a turn open or manufacture this status.
+   */
+  function platformDelay(turn) {
+    return safe(() => {
+      if (!turn) return false;
+      for (const section of turnNodes(turn)) {
+        const clone = section.cloneNode(true);
+        for (const authored of clone.querySelectorAll(
+          `${OWN_SURFACES}, .markdown, [data-message-author-role="user"], ` +
+          '[data-markdown-text-style="assistant-message"], [contenteditable="true"]'
+        )) authored.remove();
+        const value = text(clone, 2000).replace(/\s+/g, ' ').trim();
+        if (value.includes(PLATFORM_DELAY_TEXT)) return true;
+      }
+      return false;
+    }, false);
+  }
+
   function searchUnitRole(node) {
     const key = node?.getAttribute?.('data-chatgpt-search-unit-key') ||
       node?.getAttribute?.('data-content-search-unit-key') || '';
@@ -3000,6 +3026,7 @@ var CLF_DOM = (() => {
     connectorRows,
     fiberRef,
     activitySummaryRows,
+    platformDelay,
     thoughtActivityRows,
     toolLabel,
     errors,
