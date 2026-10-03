@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import { ResourceNotFoundError, type McpServer } from '@modelcontextprotocol/server';
 import type { PluginToolSchema } from '../../shared/plugin-refresh.js';
 import { pluginManager } from '../plugins/manager.js';
 import { getConfig } from '../config.js';
@@ -28,6 +28,21 @@ export function registerPluginTools(server: McpServer): PluginToolSchema[] {
     (name, args, parent) => dispatch(name, args, parent.caller.transportKey, parent.caller.requestId, 'plugins', () => runPluginTool(name, args), parent));
   if (codeMode) tools.push({ name: 'exec', title: declaration.title, description: declaration.description,
     inputSchema: toolSchemaJson(codeModeSchema) as (typeof tools)[number]['inputSchema'], annotations: declaration.annotations });
+  const resourceUris = pluginManager.resourceUris();
+  if (!resourceUris.length) {
+    server.server.registerCapabilities({ resources: { listChanged: true } });
+    server.server.setRequestHandler('resources/list', async () => ({ resources: [] }));
+    server.server.setRequestHandler('resources/read', async request => {
+      throw new ResourceNotFoundError(request.params.uri);
+    });
+  }
+  for (const uri of resourceUris) {
+    server.registerResource(uri, uri, {}, async resourceUri => {
+      const result = await pluginManager.readResource(resourceUri.href);
+      if (!result) throw new ResourceNotFoundError(resourceUri.href);
+      return result;
+    });
+  }
   server.server.setRequestHandler('tools/list', async () => ({ tools }));
   server.server.setRequestHandler('tools/call', async (request, context) => {
     const tool = tools.find(item => item.name === request.params.name);

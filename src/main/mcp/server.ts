@@ -368,8 +368,12 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
           ? `oauth-metadata/${prmRoute.id}`
           : pathOnly.slice(0, 40);
       const method = req.method ?? '?';
+      const rawMcpMethod = req.headers['mcp-method'];
+      const mcpMethod = route && typeof rawMcpMethod === 'string' && /^[a-z0-9_./-]{1,80}$/i.test(rawMcpMethod)
+        ? ` mcp-method=${rawMcpMethod}`
+        : '';
       const who = selfTest ? ' (self-test)' : tunnelProbe ? ' (tunnel probe)' : '';
-      const line = `${method} ${shape} → ${res.statusCode} in ${Date.now() - startedAt}ms${who}${formatInboundTiming(timing)}`;
+      const line = `${method} ${shape}${mcpMethod} → ${res.statusCode} in ${Date.now() - startedAt}ms${who}${formatInboundTiming(timing)}`;
       // Streamable HTTP makes the server-opened SSE stream and session deletion
       // optional, and 405 is the prescribed answer for a server that offers
       // neither. ChatGPT probes for both on every connect, so treating those two

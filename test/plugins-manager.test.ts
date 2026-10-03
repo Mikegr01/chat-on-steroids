@@ -57,6 +57,64 @@ describe('external plugin authority', () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it('proxies only resources advertised by a currently exposed plugin tool', async () => {
+    const uri = 'ui://fixture/viewer.html';
+    const resourceFixture = `const readline=require('node:readline');
+const tools=[{name:'viewer_tool',description:'Viewer fixture',inputSchema:{type:'object'},_meta:{'openai/outputTemplate':'${uri}','ui/resourceUri':'${uri}',ui:{resourceUri:'${uri}'}}}];
+readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result;if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{},resources:{}},serverInfo:{name:'resource fixture',version:'1'}};else if(m.method==='tools/list')result={tools};else if(m.method==='resources/read'&&m.params.uri==='${uri}')result={contents:[{uri:'${uri}',mimeType:'text/html',text:'<main>fixture</main>'}]};else result={};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`;
+    await fs.writeFile(entry, resourceFixture);
+    const row = (await manager.install({ name: 'Resource integration', source: { kind: 'command', command: process.execPath, args: [entry] } })).plugins[0]!;
+    expect(manager.resourceUris()).toEqual([uri]);
+    expect(await manager.readResource(uri)).toEqual({
+      contents: [{ uri, mimeType: 'text/html', text: '<main>fixture</main>' }]
+    });
+    expect(await manager.readResource('ui://fixture/not-advertised.html')).toBeNull();
+    await manager.setToolEnabled(row.id, 'viewer_tool', false);
+    expect(manager.resourceUris()).toEqual([]);
+    expect(await manager.readResource(uri)).toBeNull();
+    await manager.setToolEnabled(row.id, 'viewer_tool', true);
+    expect(manager.resourceUris()).toEqual([uri]);
+    expect((await manager.readResource(uri))?.contents[0]).toMatchObject({ uri });
+    await manager.setEnabled(row.id, false);
+    expect(manager.resourceUris()).toEqual([]);
+    expect(await manager.readResource(uri)).toBeNull();
+    await manager.setEnabled(row.id, true);
+    expect(manager.resourceUris()).toEqual([uri]);
+    const revisedUri = 'ui://fixture/revised.html';
+    await fs.writeFile(entry, resourceFixture.replaceAll(uri, revisedUri));
+    await manager.restart(row.id);
+    expect(manager.resourceUris()).toEqual([revisedUri]);
+    expect(await manager.readResource(uri)).toBeNull();
+    expect((await manager.readResource(revisedUri))?.contents[0]).toMatchObject({ uri: revisedUri });
+    await manager.uninstall(row.id);
+    expect(manager.resourceUris()).toEqual([]);
+    expect(await manager.readResource(revisedUri)).toBeNull();
+  });
+
+  it('fails closed when two exposed plugins claim the same resource URI', async () => {
+    const uri = 'ui://fixture/shared.html';
+    const server = (name: string) => `const readline=require('node:readline');
+const tools=[{name:'${name}',description:'Viewer fixture',inputSchema:{type:'object'},_meta:{'openai/outputTemplate':'${uri}'}}];
+readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result;if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{},resources:{}},serverInfo:{name:'resource fixture',version:'1'}};else if(m.method==='tools/list')result={tools};else if(m.method==='resources/read')result={contents:[{uri:'${uri}',text:'${name}'}]};else result={};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`;
+    await fs.writeFile(entry, server('viewer_one'));
+    await manager.install({ name: 'Resource owner one', source: { kind: 'command', command: process.execPath, args: [entry] } });
+    await fs.writeFile(entry, server('viewer_two'));
+    await manager.install({ name: 'Resource owner two', source: { kind: 'command', command: process.execPath, args: [entry] } });
+    expect(manager.tools().map(tool => tool.name).sort()).toEqual(['viewer_one', 'viewer_two']);
+    expect(manager.resourceUris()).toEqual([]);
+    expect(await manager.readResource(uri)).toBeNull();
+  });
+
+  it('preserves upstream resource read failures instead of misclassifying them as not found', async () => {
+    const uri = 'ui://fixture/failing.html';
+    const resourceFixture = `const readline=require('node:readline');
+const tools=[{name:'viewer_tool',description:'Viewer fixture',inputSchema:{type:'object'},_meta:{'openai/outputTemplate':'${uri}'}}];
+readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result,error;if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{},resources:{}},serverInfo:{name:'resource fixture',version:'1'}};else if(m.method==='tools/list')result={tools};else if(m.method==='resources/read'&&m.params.uri==='${uri}')error={code:-32603,message:'fixture upstream failure'};else result={};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,...(error?{error}:{result})})+'\\n');});`;
+    await fs.writeFile(entry, resourceFixture);
+    await manager.install({ name: 'Resource failure integration', source: { kind: 'command', command: process.execPath, args: [entry] } });
+    await expect(manager.readResource(uri)).rejects.toThrow('fixture upstream failure');
+  });
+
   it('uses exposure conflicts for refused calls even while either claimant is disabled', async () => {
     const first = (await manager.install({ name: 'First integration', source: { kind: 'command', command: process.execPath, args: [entry] } })).plugins[0]!;
     const second = (await manager.install({ name: 'Second integration', source: { kind: 'command', command: process.execPath, args: [entry] } })).plugins[1]!;

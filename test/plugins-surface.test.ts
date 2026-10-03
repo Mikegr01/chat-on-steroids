@@ -23,7 +23,12 @@ const plugin = vi.hoisted(() => ({
     inputSchema: { type: 'object', properties: { name: { $ref: '#/$defs/label' } }, $defs: { label: { type: 'string', minLength: 1 } }, required: ['name'], additionalProperties: false },
     outputSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    _meta: { example: 'preserved' }
+    _meta: {
+      example: 'preserved',
+      'openai/outputTemplate': 'ui://fixture/viewer.html',
+      ui: { resourceUri: 'ui://fixture/viewer.html' },
+      'ui/resourceUri': 'ui://fixture/viewer.html'
+    }
   },
   call: vi.fn(async (_name?: string, _args?: unknown, _onOutcome?: (outcome: 'tool_rejected' | 'tool_execution_error') => void): Promise<CallToolResult> => ({ content: [{ type: 'text', text: 'scene' }, { type: 'resource_link', uri: 'https://example.com/scene', name: 'scene' }], structuredContent: { count: 2 }, _meta: { upstream: true } })),
   redact: (value: unknown): unknown => JSON.parse(JSON.stringify(value).replaceAll('credential-fixture', '[redacted]').replaceAll('UklGR', '[redacted]')),
@@ -36,6 +41,10 @@ vi.mock('../src/main/plugins/manager.js', async importOriginal => {
   plugin.redactResult.mockImplementation(result => redactor.redactResult(result));
   return { ...actual, pluginManager: {
     tools: () => plugin.enabled ? [plugin.declaration] : [],
+    resourceUris: () => plugin.enabled ? ['ui://fixture/viewer.html'] : [],
+    readResource: async (uri: string) => plugin.enabled && uri === 'ui://fixture/viewer.html'
+      ? { contents: [{ uri, mimeType: 'text/html', text: '<main>fixture</main>' }] }
+      : null,
     call: async (...args: unknown[]) => plugin.redactResult(plugin.enabled ? await plugin.call(...args as []) : { isError: true, content: [{ type: 'text', text: 'PLUGIN_DISABLED' }] }),
     redact: plugin.redact,
     redactResult: plugin.redactResult
@@ -69,6 +78,28 @@ it('publishes exact external JSON schemas only on the separately tokenized Plugi
   }
   expect(plugin.call).not.toHaveBeenCalled();
 });
+it('serves only tool-advertised plugin UI resources on the Plugins surface', async () => {
+  const uri = 'ui://fixture/viewer.html';
+  expect((await rpc('plugins', 'resources/list')).result.resources).toEqual([
+    expect.objectContaining({ uri, name: uri })
+  ]);
+  expect((await rpc('plugins', 'resources/read', { uri })).result).toEqual({
+    contents: [{ uri, mimeType: 'text/html', text: '<main>fixture</main>' }]
+  });
+  expect((await rpc('plugins', 'resources/read', { uri: 'ui://fixture/not-advertised.html' })).error).toBeDefined();
+  expect((await rpc('core', 'resources/read', { uri })).error).toBeDefined();
+  plugin.enabled = false;
+  expect((await rpc('plugins', 'resources/list')).result.resources).toEqual([]);
+  expect((await rpc('plugins', 'resources/read', { uri })).error).toBeDefined();
+  plugin.enabled = true;
+  expect((await rpc('plugins', 'resources/list')).result.resources).toEqual([
+    expect.objectContaining({ uri, name: uri })
+  ]);
+  expect((await rpc('plugins', 'resources/read', { uri })).result).toEqual({
+    contents: [{ uri, mimeType: 'text/html', text: '<main>fixture</main>' }]
+  });
+});
+
 it('preserves structured results, resource blocks and metadata through the shared dispatcher and recorder', async () => {
   const response = await rpc('plugins', 'tools/call', { name: plugin.declaration.name, arguments: { name: 'credential-fixture' } });
   expect(response.result).toMatchObject({ structuredContent: { count: 2 }, _meta: { upstream: true } });

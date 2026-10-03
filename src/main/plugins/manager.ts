@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ToolSchema } from '@modelcontextprotocol/core';
-import { Client, StreamableHTTPClientTransport, UnauthorizedError, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport, UnauthorizedError, type Tool, type CallToolResult, type ReadResourceResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getMcpConfigForManifest, vAny } from '@anthropic-ai/mcpb/browser';
 import { getSecret, setSecret, clearSecret } from '../secrets.js';
@@ -48,6 +48,18 @@ const boundedFetch: typeof fetch = async (input, init) => {
   );
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 };
+
+function advertisedResourceUris(tool: Tool): string[] {
+  const meta = tool._meta;
+  if (!meta || typeof meta !== 'object') return [];
+  const ui = meta.ui;
+  const candidates = [
+    meta['openai/outputTemplate'],
+    meta['ui/resourceUri'],
+    ui && typeof ui === 'object' && !Array.isArray(ui) ? (ui as Record<string, unknown>).resourceUri : undefined,
+  ];
+  return [...new Set(candidates.filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 8192))];
+}
 
 /** Installation policy owns connections; lifecycle mutations serialize per installation. */
 export class PluginManager {
@@ -877,7 +889,54 @@ export class PluginManager {
     }
     this.changed();
   }
+  private resourceOwners(): Map<string, string> {
+    const exposure = this.exposure();
+    const claims = new Map<string, Set<string>>();
+    for (const tool of exposure.tools) {
+      const owner = exposure.owners.get(tool.name);
+      if (!owner) continue;
+      for (const uri of advertisedResourceUris(tool)) {
+        const owners = claims.get(uri) ?? new Set<string>();
+        owners.add(owner);
+        claims.set(uri, owners);
+      }
+    }
+    return new Map([...claims].flatMap(([uri, owners]) => owners.size === 1 ? [[uri, [...owners][0]!]] : []));
+  }
   tools(): Tool[] { return [...this.exposure().tools]; }
+  resourceUris(): string[] { return [...this.resourceOwners().keys()]; }
+  async readResource(uri: string): Promise<ReadResourceResult | null> {
+    const owner = this.resourceOwners().get(uri);
+    if (!owner) return null;
+    let acquired: { row: RecordEntry; live: Live } | undefined;
+    try {
+      acquired = await this.serial(owner, async () => {
+        if (this.closing || this.resourceOwners().get(uri) !== owner) return;
+        const row = this.records.find(row => row.id === owner && row.enabled);
+        if (!row) return;
+        let live = this.live.get(row.id);
+        if (!live) { await this.connect(row); live = this.live.get(row.id); }
+        if (!live || !row.enabled || this.closing || this.resourceOwners().get(uri) !== row.id) {
+          if (live && live.users === 0) await this.disconnect(row);
+          return;
+        }
+        live.users++;
+        return { row, live };
+      });
+    } catch {
+      return null;
+    }
+    if (!acquired) return null;
+    const { row, live } = acquired;
+    try {
+      const result = await live.client.readResource({ uri }, { timeout: 120000 });
+      if (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 * 1024)
+        throw new Error('Plugin resource exceeds 16 MiB');
+      return this.redact(result) as ReadResourceResult;
+    } finally {
+      this.release(row, live);
+    }
+  }
   async call(name: string, args: Record<string, unknown> = {},
     onOutcome?: (outcome: 'tool_rejected' | 'tool_execution_error') => void): Promise<CallToolResult> {
     // The invocation owner knows whether a tool failed or was never admitted.
