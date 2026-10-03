@@ -359,7 +359,7 @@ beforeAll(async () => {
     sessions: { ...baseConfig.sessions, record: true },
     // Isolate legacy tab/Goal recovery; automatic Continue is covered by input integration.
     ui: { ...baseConfig.ui, autoContinue: false },
-    multiAgent: { ...baseConfig.multiAgent, enabled: true, recoverAgentTabs: true }
+    multiAgent: { ...baseConfig.multiAgent, enabled: true, recoverAgentTabs: true, workerPolicy: 'auto' }
   };
   await saveConfig(suiteConfig);
   const port = await startBridge();
@@ -3470,7 +3470,8 @@ describe('delivering a bootstrap', () => {
       kind: 'worker',
       fromSessionId: null,
       agentId: 'worker-1',
-      task: 'Keep durable worker attribution'
+      task: 'Keep durable worker attribution',
+      origin: 'NORMAL_AUTO'
     });
     expect(summary?.title).toBe('worker-1 · Keep durable worker attribution');
   });
@@ -11501,7 +11502,8 @@ describe('the goal loop over the bridge', () => {
     await saveConfig({
       ...defaultConfig(),
       sessions: { ...defaultConfig().sessions, record: true },
-      goal: { ...defaultConfig().goal, backend: 'api', enabled: true, model: 'deepseek/deepseek-v4-flash', reasoning: 'default' }
+      goal: { ...defaultConfig().goal, backend: 'api', enabled: true, model: 'deepseek/deepseek-v4-flash', reasoning: 'default' },
+      multiAgent: { ...defaultConfig().multiAgent, enabled: true, workerPolicy: 'auto' }
     });
     await setSecret('openRouterApiKey', 'sk-or-bridge');
     resetGoalStateForTests();

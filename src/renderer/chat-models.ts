@@ -80,9 +80,8 @@ function options(select: HTMLSelectElement, choices: Array<{ id: string; label: 
     const unavailable = option(() => t("No observed choices"), ''); unavailable.disabled = true; desired.push(unavailable);
   }
   if (value && !choices.some(choice => choice.id === value)) {
-    // The worker and helper selects show an Unverified badge beside them; every other select
-    // (the composer and the reasoning pickers) keeps saying so in the option itself.
-    const badged = select.id === 'workerModel' || select.id === 'helperModel';
+    // The worker, helper, and specific model selects show an Unverified/Unavailable badge beside them
+    const badged = select.id === 'workerModel' || select.id === 'helperModel' || select.id === 'workerSpecificModel' || select.id === 'verifierSpecificModel';
     const unverified = option(badged ? value : () => t("{0} · not verified", [value]), value);
     unverified.disabled = true;
     desired.push(unverified);
@@ -93,7 +92,7 @@ function options(select: HTMLSelectElement, choices: Array<{ id: string; label: 
     return !current || current.value !== node.value || current.text !== node.text || current.disabled !== node.disabled;
   })) select.replaceChildren(...desired);
   select.value = value;
-  if (select.id === 'workerModel' || select.id === 'helperModel') {
+  if (select.id === 'workerModel' || select.id === 'helperModel' || select.id === 'workerSpecificModel' || select.id === 'verifierSpecificModel') {
     let badge = select.nextElementSibling as HTMLElement | null;
     if (!badge?.classList.contains('model-verification')) {
       badge = el('span', 'model-verification');
@@ -103,7 +102,10 @@ function options(select: HTMLSelectElement, choices: Array<{ id: string; label: 
     }
     const unverified = !!value && !choices.some(choice => choice.id === value);
     badge.hidden = !unverified;
-    if (unverified) ui(badge, 'textContent', () => t('Unverified'));
+    if (unverified) {
+      const isSpecific = select.id === 'workerSpecificModel' || select.id === 'verifierSpecificModel';
+      ui(badge, 'textContent', () => isSpecific ? t('Unavailable · Falls back to Inherit Prime') : t('Unverified'));
+    }
   }
 }
 
@@ -389,6 +391,13 @@ export async function ensureComposerModel(refresh = false): Promise<SendModel | 
   return catalog.state === 'ready' && !catalog.error ? confirmedComposerModel() : currentModelChosen() ? { ...CURRENT_MODEL } : null;
 }
 
+export function paintSpecificModelSelect(id: string, value?: string): void {
+  const select = document.getElementById(id) as HTMLSelectElement | null;
+  if (!select) return;
+  const choices = distinctModelChoices(catalog.models);
+  options(select, choices, value ?? select.value);
+}
+
 export function applyChatModels(config: Config, previous?: Config): void {
   // Preserve configured values even before an observation arrives; unrelated saves must not erase them.
   const chosen = (id: string, value: string, prior?: string) => {
@@ -397,12 +406,16 @@ export function applyChatModels(config: Config, previous?: Config): void {
   };
   paintPair('workerModel', 'workerReasoning', chosen('workerModel', config.multiAgent.defaultModel ?? '', previous?.multiAgent.defaultModel), chosen('workerReasoning', config.multiAgent.defaultReasoning ?? '', previous?.multiAgent.defaultReasoning));
   paintPair('helperModel', 'helperReasoning', chosen('helperModel', config.goal.helperModel ?? 'gpt-5.6-sol', previous?.goal.helperModel ?? 'gpt-5.6-sol'), chosen('helperReasoning', config.goal.helperReasoning ?? 'high', previous?.goal.helperReasoning ?? 'high'));
+  paintSpecificModelSelect('workerSpecificModel', chosen('workerSpecificModel', config.multiAgent.workerSpecificModel ?? '', previous?.multiAgent.workerSpecificModel));
+  paintSpecificModelSelect('verifierSpecificModel', chosen('verifierSpecificModel', config.multiAgent.verifierSpecificModel ?? '', previous?.multiAgent.verifierSpecificModel));
   if (catalogSubscribed && catalog.state !== 'unknown') return;
   const requested = ++generation;
   void window.api.getChatModels().then(result => {
     if (requested !== generation || !result?.ok || !result.data) return;
     catalog = result.data;
     for (const [modelId, effortId] of pairs) paintPair(modelId, effortId);
+    paintSpecificModelSelect('workerSpecificModel', chosen('workerSpecificModel', config.multiAgent.workerSpecificModel ?? '', previous?.multiAgent.workerSpecificModel));
+    paintSpecificModelSelect('verifierSpecificModel', chosen('verifierSpecificModel', config.multiAgent.verifierSpecificModel ?? '', previous?.multiAgent.verifierSpecificModel));
     paintComposerContext();
     paintStatus();
   });
@@ -416,6 +429,8 @@ export function initChatModels(onPaint?: () => void): void {
       // A current push supersedes every older startup/read/refresh response.
       ++generation; catalog = value;
       for (const [modelId, effortId] of pairs) paintPair(modelId, effortId);
+      paintSpecificModelSelect('workerSpecificModel');
+      paintSpecificModelSelect('verifierSpecificModel');
       paintComposerContext(); paintStatus();
     });
   }
@@ -437,5 +452,7 @@ export function initChatModels(onPaint?: () => void): void {
   }
   for (const id of ['refreshChatModels', 'refreshComposerModels']) document.getElementById(id)?.addEventListener('click', () => { void discoverModels(); });
   for (const [modelId, effortId] of pairs) paintPair(modelId, effortId);
+  paintSpecificModelSelect('workerSpecificModel');
+  paintSpecificModelSelect('verifierSpecificModel');
   paintStatus();
 }

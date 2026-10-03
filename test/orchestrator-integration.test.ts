@@ -17,6 +17,8 @@ import {
   type CommittedWorkerReport
 } from '../src/main/agents.js';
 import { initSessionStore, resetSessionStoreForTests } from '../src/main/session/store.js';
+import { initConfigPath, saveConfig, defaultConfig } from '../src/main/config.js';
+import path from 'node:path';
 
 function mockReport(workerId: string, messageId: string, result: string): CommittedWorkerReport {
   return {
@@ -67,6 +69,16 @@ describe('Orchestrator Phase 2 Integration Slice', () => {
 
   beforeEach(async () => {
     dir = await makeTempDir('orch-p2-test-');
+    initConfigPath(path.join(dir, 'config.json'));
+    const base = defaultConfig();
+    await saveConfig({
+      ...base,
+      multiAgent: {
+        ...base.multiAgent,
+        enabled: true,
+        workerPolicy: 'auto'
+      }
+    });
     initDurableStore(dir);
     initSessionStore(dir);
     resetOrchestratorForTests();

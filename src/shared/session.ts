@@ -6,6 +6,8 @@
  * agree on exactly.
  */
 
+import type { WorkerProvenanceOrigin, OrchestratorExecutionRole } from './types.js';
+
 /** Where an event came from. The extension is untrusted UI observation; mcp is ours. */
 export type EventSource = 'extension' | 'mcp' | 'app';
 
@@ -514,6 +516,10 @@ export interface SessionOrigin {
   agentId: string | null;
   /** The worker's task, verbatim from `agents action=spawn`. Empty for a resume. */
   task: string;
+  origin?: WorkerProvenanceOrigin;
+  orchestratorRunId?: string;
+  orchestratorStepId?: string;
+  executionRole?: OrchestratorExecutionRole;
 }
 
 const RESUMED_PREFIX = 'Resumed · ';
@@ -869,6 +875,10 @@ export interface AgentInfo {
    * decides whether a worker is still worth reviving — see {@link revivable}.
    */
   contextTokens: number;
+  origin?: WorkerProvenanceOrigin;
+  orchestratorRunId?: string;
+  orchestratorStepId?: string;
+  executionRole?: OrchestratorExecutionRole;
 }
 
 /**

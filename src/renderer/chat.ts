@@ -363,9 +363,13 @@ function sessionBadges(summary: SessionSummary): Badge[] {
   }
   // First, and in the failure tone: a blocked chat is the one state on this row that says the
   // app is actively refusing work, and the user came to the list to find it at a glance.
-  if (blockedChats.has(summary.conversationId)) badges.push({ text: 'blocked', tone: 'is-failed' });
-  if (origin?.kind === 'worker') badges.push({ text: origin.agentId ?? 'worker', tone: '' });
-  else if (origin?.kind === 'resume') badges.push({ text: 'resumed', tone: '' });
+  if (origin?.kind === 'worker') {
+    let label = origin.agentId ?? 'worker';
+    if (origin.origin === 'ORCHESTRATOR') {
+      label = `${label} · ORCH · ${origin.executionRole ?? 'worker'}`;
+    }
+    badges.push({ text: label, tone: '' });
+  } else if (origin?.kind === 'resume') badges.push({ text: 'resumed', tone: '' });
   else if (summary.agents.includes('prime')) badges.push({ text: 'prime', tone: '' });
 
   // Agent ids are reused across runs (`worker-1`, `worker-2`, ...). Matching only by that
@@ -1237,13 +1241,13 @@ async function refreshSessionControls(): Promise<void> {
     // Retire the previous selection's projection before awaiting the new owner's IPC.
     // Replace the translation binding too, so a locale refresh cannot revive its status.
     ui($('sessionControlStatus'), 'textContent', () => '');
-    for (const action of ['compactSession', 'cancelCompaction']) $(action).hidden = true;
+    for (const action of ['compactSession', 'cancelCompaction', 'authorizeWorkerSpawn']) $(action).hidden = true;
   }
   paintAutomationSwitch();
   if (!id) { controlledSessionId = null; controlledTurnId = null; paintDeliveryControls(); menu.hidden = false;
     $<HTMLTextAreaElement>('sessionObjective').disabled = false;
     paintTaskActions();
-    for (const action of ['compactSession', 'cancelCompaction']) $(action).hidden = true;
+    for (const action of ['compactSession', 'cancelCompaction', 'authorizeWorkerSpawn']) $(action).hidden = true;
     return; }
   const opening = pendingComposerInputs.find(row => row.opening && row.sessionId === id && ['queued', 'browser'].includes(row.state));
   if (!sessions.find(row => row.id === id)?.conversationId) {
@@ -1257,7 +1261,7 @@ async function refreshSessionControls(): Promise<void> {
     const objective = $<HTMLTextAreaElement>('sessionObjective');
     objective.value = opening?.objective ?? ''; objective.disabled = true;
     objective.dataset.sessionId = id;
-    for (const action of ['compactSession', 'cancelCompaction']) $(action).hidden = true;
+    for (const action of ['compactSession', 'cancelCompaction', 'authorizeWorkerSpawn']) $(action).hidden = true;
     paintAutomationSwitch(); paintDeliveryControls();
     return;
   }
@@ -1299,6 +1303,13 @@ async function refreshSessionControls(): Promise<void> {
   $<HTMLButtonElement>('compactSession').disabled = !!controls.blocked || !!controls.job?.busy;
   $('cancelCompaction').hidden = !controls.job?.busy;
   ui($('sessionControlStatus'), 'textContent', () => controls.blocked === 'worker' ? t("This sub-agent is managed by its prime.") : controls.blocked === 'blocked' ? t("This chat is blocked.") : controls.job?.busy ? t("Compaction is running in ChatGPT.") : '');
+  const selectedSession = sessions.find(row => row.id === id);
+  const isAskPolicy = deps.state()?.config.multiAgent.workerPolicy === 'ask';
+  const authorizeBtn = document.getElementById('authorizeWorkerSpawn') as HTMLButtonElement | null;
+  if (authorizeBtn) {
+    authorizeBtn.hidden = !controls || !isAskPolicy || !selectedSession?.conversationId;
+    authorizeBtn.disabled = !!controls.blocked || !!controls.job?.busy;
+  }
 }
 
 async function loadDetail(navigate = false, olderBefore?: number, newerFrom?: number): Promise<boolean> {
@@ -3358,6 +3369,16 @@ function paintSwarm(state: SwarmState): void {
         top.append(el('b', '', label));
         if (label !== agent.id) top.append(el('span', 'chip', agent.id));
         top.append(el('span', `chip is-${agent.state}`, agent.state));
+        if (agent.origin) {
+          const prov = agent.origin === 'ORCHESTRATOR'
+            ? `ORCH · ${agent.executionRole ?? 'worker'}`
+            : agent.origin === 'NORMAL_AUTHORIZED'
+              ? 'Authorized'
+              : agent.origin === 'NORMAL_AUTO'
+                ? 'Auto sub-agent'
+                : agent.origin;
+          top.append(el('span', 'chip chip-origin', prov));
+        }
         // Clearing is offered where the agent is, not only as one global reset at the
         // bottom of a settings form. The two rows mean different things and the tooltip
         // says which: the prime is the run, a worker is one slot.
@@ -3444,7 +3465,12 @@ export function chatSettingsPatch(current: Config): {
       maxWorkers: number('maWorkers', current.multiAgent.maxWorkers, 1, 8),
       allowUnattributedCalls: $<HTMLInputElement>('allowUnattributedCalls').checked,
       recoverAgentTabs: $<HTMLInputElement>('recoverAgentTabs').checked,
-      waitForSubAgents: $<HTMLInputElement>('waitForSubAgents').checked
+      waitForSubAgents: $<HTMLInputElement>('waitForSubAgents').checked,
+      workerPolicy: ($<HTMLSelectElement>('workerPolicy')?.value ?? current.multiAgent.workerPolicy ?? 'off') as Config['multiAgent']['workerPolicy'],
+      workerModelPolicy: ($<HTMLSelectElement>('workerModelPolicy')?.value ?? current.multiAgent.workerModelPolicy ?? 'auto') as Config['multiAgent']['workerModelPolicy'],
+      workerSpecificModel: $<HTMLSelectElement>('workerSpecificModel')?.value || undefined,
+      verifierModelPolicy: ($<HTMLSelectElement>('verifierModelPolicy')?.value ?? current.multiAgent.verifierModelPolicy ?? 'auto') as Config['multiAgent']['verifierModelPolicy'],
+      verifierSpecificModel: $<HTMLSelectElement>('verifierSpecificModel')?.value || undefined
     },
     goal: {
       enabled: current.goal.enabled, mode: current.goal.mode,
@@ -3822,6 +3848,7 @@ const CHAT_INPUTS = [
   'goalIncludeToolCalls',
   'planBackend',
   'finishTool', 'finishLeadMinutes', 'workerModel', 'workerReasoning', 'backgroundChats', 'browserOnly', 'autoRefreshPlugins',
+  'workerPolicy', 'workerModelPolicy', 'workerSpecificModel', 'verifierModelPolicy', 'verifierSpecificModel',
   'goalBackend',
   'loopBackend',
   'helperModel', 'helperReasoning',
@@ -3881,6 +3908,19 @@ export function chatApply(state: AppState, previous?: Config): void {
 
   applyChatValue($<HTMLSelectElement>('workerModel'), config.multiAgent.defaultModel ?? '', previous?.multiAgent.defaultModel);
   applyChatValue($<HTMLSelectElement>('workerReasoning'), config.multiAgent.defaultReasoning ?? '', previous?.multiAgent.defaultReasoning);
+  if ($('workerPolicy')) applyChatValue($<HTMLSelectElement>('workerPolicy'), config.multiAgent.workerPolicy ?? 'off', previous?.multiAgent.workerPolicy);
+  if ($('workerModelPolicy')) {
+    applyChatValue($<HTMLSelectElement>('workerModelPolicy'), config.multiAgent.workerModelPolicy ?? 'auto', previous?.multiAgent.workerModelPolicy);
+    const row = $('workerSpecificModelRow');
+    if (row) row.hidden = (config.multiAgent.workerModelPolicy ?? 'auto') !== 'specific_model';
+  }
+  if ($('workerSpecificModel')) applyChatValue($<HTMLSelectElement>('workerSpecificModel'), config.multiAgent.workerSpecificModel ?? '', previous?.multiAgent.workerSpecificModel);
+  if ($('verifierModelPolicy')) {
+    applyChatValue($<HTMLSelectElement>('verifierModelPolicy'), config.multiAgent.verifierModelPolicy ?? 'auto', previous?.multiAgent.verifierModelPolicy);
+    const row = $('verifierSpecificModelRow');
+    if (row) row.hidden = (config.multiAgent.verifierModelPolicy ?? 'auto') !== 'specific_model';
+  }
+  if ($('verifierSpecificModel')) applyChatValue($<HTMLSelectElement>('verifierSpecificModel'), config.multiAgent.verifierSpecificModel ?? '', previous?.multiAgent.verifierSpecificModel);
   applyChatValue($<HTMLSelectElement>('goalBackend'), config.goal.backend ?? 'chatgpt', previous?.goal.backend);
   applyChatValue($<HTMLSelectElement>('loopBackend'), config.goal.loopBackend ?? 'chatgpt', previous?.goal.loopBackend);
   applyChatValue($<HTMLSelectElement>('helperModel'), config.goal.helperModel ?? 'gpt-5.6-sol', previous?.goal.helperModel);
@@ -4675,6 +4715,18 @@ export function initChat(next: Deps): void {
       finally { button.disabled = false; if (selectedId === id) void refreshSessionControls(); }
     });
   }
+  $('authorizeWorkerSpawn')?.addEventListener('click', async () => {
+    const session = sessions.find(row => row.id === selectedId);
+    if (!session?.conversationId) return;
+    const button = $<HTMLButtonElement>('authorizeWorkerSpawn');
+    button.disabled = true;
+    try {
+      await run(api.authorizeSpawn(session.conversationId));
+      toast(t("Sub-agent spawn authorized for 5 minutes (single-use)."));
+    } finally {
+      button.disabled = false;
+    }
+  });
   const appendImages = (owner: ComposerDraftOwner, chosen: InputAttachment[] | null | undefined): boolean => {
     if (!chosen?.length) return false;
     if (!ownsComposerDraft(owner)) { toast(t("Files were not added because the draft changed.")); return false; }
@@ -4835,6 +4887,51 @@ export function initChat(next: Deps): void {
     // The toolbar toggle only arms planning; Send/Enter generates from the draft.
     if (taskPlans.has(draftKey())) cancelTaskPlan();
     else { taskPlans.set(draftKey(), { text: '', requestId: null, stages: null, sending: false, progress: null, error: null }); paintTaskPlan(); $('chatInput').focus(); }
+  });
+
+  let orchEnabled = false;
+
+  function paintOrch(): void {
+    const toggle = document.getElementById('orchToggle');
+    const switchEl = document.getElementById('orchSwitch') as HTMLInputElement | null;
+    const statusRow = document.getElementById('orchStatus');
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', String(orchEnabled));
+      toggle.classList.toggle('is-active', orchEnabled);
+    }
+    if (switchEl) {
+      switchEl.checked = orchEnabled;
+    }
+    if (statusRow) {
+      if (orchEnabled) {
+        statusRow.hidden = false;
+        statusRow.replaceChildren(
+          el('span', 'orch-status-text', () => t("ORCH Active · Bounded sequential worker/verifier execution"))
+        );
+      } else {
+        statusRow.hidden = true;
+        statusRow.replaceChildren();
+      }
+    }
+  }
+
+  $('orchToggle')?.addEventListener('click', () => {
+    orchEnabled = !orchEnabled;
+    paintOrch();
+  });
+  $('orchSwitch')?.addEventListener('change', () => {
+    const switchEl = document.getElementById('orchSwitch') as HTMLInputElement | null;
+    orchEnabled = switchEl?.checked ?? false;
+    paintOrch();
+  });
+
+  $('workerModelPolicy')?.addEventListener('change', () => {
+    const row = $('workerSpecificModelRow');
+    if (row) row.hidden = $<HTMLSelectElement>('workerModelPolicy').value !== 'specific_model';
+  });
+  $('verifierModelPolicy')?.addEventListener('change', () => {
+    const row = $('verifierSpecificModelRow');
+    if (row) row.hidden = $<HTMLSelectElement>('verifierModelPolicy').value !== 'specific_model';
   });
   $('composer').addEventListener('submit', (event) => {
     event.preventDefault();

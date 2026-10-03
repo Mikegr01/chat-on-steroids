@@ -53,7 +53,7 @@ beforeAll(async () => {
   dir = await makeTempDir('clf-swarm-');
   initConfigPath(dir);
   const config = defaultConfig();
-  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 3 } });
+  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 3, workerPolicy: 'auto' } });
 });
 
 afterEach(async () => {

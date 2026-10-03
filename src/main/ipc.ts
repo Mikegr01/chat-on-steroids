@@ -107,6 +107,8 @@ import { readSessionEvents, readSessionList, sessionListCursorSchema } from './s
 import { exportSessionMarkdown } from './session/markdown-export.js';
 import { blockedChatIds, setChatBlocked } from './session/blocked-chats.js';
 import {
+  grantSpawnAuthorization,
+  hasSpawnAuthorization,
   clearAgent,
   onSwarmChange,
   pauseSwarmForDisable,
@@ -205,6 +207,11 @@ const settingsPatch = z.object({
   }),
   multiAgent: z.object({
     enabled: z.boolean(),
+    workerPolicy: z.enum(['off', 'ask', 'auto']).optional(),
+    workerModelPolicy: z.enum(['auto', 'inherit_prime', 'specific_model']).optional(),
+    workerSpecificModel: z.string().max(80).optional(),
+    verifierModelPolicy: z.enum(['auto', 'inherit_prime', 'specific_model']).optional(),
+    verifierSpecificModel: z.string().max(80).optional(),
     defaultModel: z.string().max(80).optional(),
     defaultReasoning: z.enum(['', ...REASONING_EFFORTS]).optional(),
     maxWorkers: z.number().int().min(1).max(8),
@@ -358,6 +365,11 @@ function mergeSettings(current: Config, base: SettingsSnapshot, wanted: Settings
       defaultModel: pick(current.multiAgent.defaultModel, base.multiAgent.defaultModel, wanted.multiAgent.defaultModel),
       defaultReasoning: pick(current.multiAgent.defaultReasoning, base.multiAgent.defaultReasoning, wanted.multiAgent.defaultReasoning),
       enabled: pick(current.multiAgent.enabled, base.multiAgent.enabled, wanted.multiAgent.enabled),
+      workerPolicy: pick(current.multiAgent.workerPolicy, base.multiAgent.workerPolicy, wanted.multiAgent.workerPolicy),
+      workerModelPolicy: pick(current.multiAgent.workerModelPolicy, base.multiAgent.workerModelPolicy, wanted.multiAgent.workerModelPolicy),
+      workerSpecificModel: pick(current.multiAgent.workerSpecificModel, base.multiAgent.workerSpecificModel, wanted.multiAgent.workerSpecificModel),
+      verifierModelPolicy: pick(current.multiAgent.verifierModelPolicy, base.multiAgent.verifierModelPolicy, wanted.multiAgent.verifierModelPolicy),
+      verifierSpecificModel: pick(current.multiAgent.verifierSpecificModel, base.multiAgent.verifierSpecificModel, wanted.multiAgent.verifierSpecificModel),
       maxWorkers: pick(current.multiAgent.maxWorkers, base.multiAgent.maxWorkers, wanted.multiAgent.maxWorkers),
       allowUnattributedCalls: pick(
         current.multiAgent.allowUnattributedCalls,
@@ -1288,6 +1300,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     // The prime's report stays in the main process: the renderer needs the outcome, not
     // the message queued for the prime agent.
     return { cleared: outcome.cleared, reason: outcome.reason, swarm: swarmState() };
+  });
+
+  handle('agents:authorizeSpawn', async (payload) => {
+    const { conversationId } = z.object({ conversationId: z.string().min(1) }).parse(payload);
+    grantSpawnAuthorization(conversationId);
+    return { ok: true, authorized: true };
+  });
+
+  handle('agents:hasSpawnAuthorization', async (payload) => {
+    const { conversationId } = z.object({ conversationId: z.string().min(1) }).parse(payload);
+    return { ok: true, authorized: hasSpawnAuthorization(conversationId) };
   });
 
 

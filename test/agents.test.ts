@@ -113,7 +113,7 @@ async function setEnabled(enabled: boolean, maxWorkers = 3, allowUnattributedCal
   const base = defaultConfig();
   await saveConfig({
     ...base,
-    multiAgent: { ...base.multiAgent, enabled, maxWorkers, allowUnattributedCalls }
+    multiAgent: { ...base.multiAgent, enabled, maxWorkers, allowUnattributedCalls, workerPolicy: enabled ? 'auto' : 'off' }
   });
 }
 
@@ -375,7 +375,7 @@ describe('account-observed worker admission', () => {
 
   it('uses ChatGPT\'s current reasoning, and says so, when the saved default effort is not offered', async () => {
     const base = defaultConfig();
-    await saveConfig({ ...base, multiAgent: { ...base.multiAgent, enabled: true, defaultModel: '5.6', defaultReasoning: 'ultra' } });
+    await saveConfig({ ...base, multiAgent: { ...base.multiAgent, enabled: true, defaultModel: '5.6', defaultReasoning: 'ultra', workerPolicy: 'auto' } });
     try {
       const result = spawn({ caller: prime, workers: [{ task: 'defaults' }] });
       expect(result.created[0]).toMatchObject({ model: '5.6', reasoningEffort: null });
@@ -386,7 +386,7 @@ describe('account-observed worker admission', () => {
   // #499: a default saved before 2.1.15 read picker lanes stopped matching, and every spawn failed.
   it('uses ChatGPT\'s current model when the saved default model is not offered, but keeps explicit requests strict', async () => {
     const base = defaultConfig();
-    await saveConfig({ ...base, multiAgent: { ...base.multiAgent, enabled: true, defaultModel: 'gpt-5.6-sol', defaultReasoning: 'high' } });
+    await saveConfig({ ...base, multiAgent: { ...base.multiAgent, enabled: true, defaultModel: 'gpt-5.6-sol', defaultReasoning: 'high', workerPolicy: 'auto' } });
     try {
       const result = spawn({ caller: prime, workers: [{ task: 'stale default' }, { task: 'second' }] });
       expect(result.created.map(worker => [worker.model, worker.reasoningEffort])).toEqual([[null, 'high'], [null, 'high']]);
@@ -3872,7 +3872,7 @@ describe('waiting for a chat own sub-agents', () => {
     const base = defaultConfig();
     await saveConfig({
       ...base,
-      multiAgent: { ...base.multiAgent, enabled: true, maxWorkers, waitForSubAgents: on }
+      multiAgent: { ...base.multiAgent, enabled: true, maxWorkers, waitForSubAgents: on, workerPolicy: 'auto' }
     });
   }
 

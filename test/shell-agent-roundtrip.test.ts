@@ -34,7 +34,7 @@ beforeAll(async () => {
   directory = await makeTempDir('clf-shell-agent-wire-');
   initConfigPath(directory); initDurableStore(directory); initSessionStore(directory);
   const config = defaultConfig();
-  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 2, allowUnattributedCalls: true } });
+  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 2, allowUnattributedCalls: true, workerPolicy: 'auto' } });
   broker.onSwarmPersistNow(snapshot => writeDurableNow('swarm', snapshot));
   endpoint = await startMcpServer(() => ({ roots: [{ name: 'workspace', path: directory }],
     caps: config.capabilities, readOnly: false, agentTools: true, sessionTools: true }));

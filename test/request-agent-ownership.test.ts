@@ -25,7 +25,7 @@ const request = { requestId: 'wfr_request_prime' };
 
 async function permit(enabled: boolean): Promise<void> {
   const config = defaultConfig();
-  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 3, allowUnattributedCalls: enabled } });
+  await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, maxWorkers: 3, allowUnattributedCalls: enabled, workerPolicy: 'auto' } });
 }
 
 beforeAll(async () => {

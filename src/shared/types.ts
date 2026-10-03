@@ -291,11 +291,26 @@ export interface GoalSettings {
   loopPrompt: string;
 }
 
+export type NormalWorkerPolicy = 'off' | 'ask' | 'auto';
+export type ModelSelectionPolicy = 'auto' | 'inherit_prime' | 'specific_model';
+export type WorkerProvenanceOrigin =
+  | 'NORMAL_AUTO'
+  | 'NORMAL_AUTHORIZED'
+  | 'ORCHESTRATOR'
+  | 'SKILL'
+  | 'RESTORE';
+export type OrchestratorExecutionRole = 'worker' | 'verifier' | 'repair_worker';
+
 /**
  * Experimental multi-agent mode. Disabled by default and deliberately hard to turn on
  * by accident: several ChatGPT tabs driving the same filesystem is a real risk.
  */
 export interface MultiAgentSettings {
+  workerPolicy?: NormalWorkerPolicy;
+  workerModelPolicy?: ModelSelectionPolicy;
+  workerSpecificModel?: string;
+  verifierModelPolicy?: ModelSelectionPolicy;
+  verifierSpecificModel?: string;
   defaultModel?: string;
   defaultReasoning?: ReasoningEffort | '';
   enabled: boolean;

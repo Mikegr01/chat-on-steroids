@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentInfo, AgentMessage, AgentState, ReasoningEffort, SwarmState } from '../shared/session.js';
 import { REASONING_EFFORTS, isReasoningEffort } from '../shared/session.js';
+import type { WorkerProvenanceOrigin, OrchestratorExecutionRole } from '../shared/types.js';
 import { getConfig } from './config.js';
 import { getChatModels } from './chat-models.js';
 import type { ChatModelOption } from '../shared/chat-models.js';
@@ -705,8 +706,16 @@ export function reconcileAgentRequestOwners(): Promise<void> {
             if (epoch !== requestOwnerEpoch) return;
             if (!allFamilies().includes(owner) || owner.primeConversationId) break;
             if (agent.info.role !== 'worker' || !agent.info.conversationId) continue;
-            await noteChatOrigin(agent.info.conversationId, { kind: 'worker',
-              fromSessionId: parentSession.id, agentId: agent.info.id, task: agent.info.task });
+            await noteChatOrigin(agent.info.conversationId, {
+              kind: 'worker',
+              fromSessionId: parentSession.id,
+              agentId: agent.info.id,
+              task: agent.info.task,
+              origin: agent.info.origin,
+              orchestratorRunId: agent.info.orchestratorRunId,
+              orchestratorStepId: agent.info.orchestratorStepId,
+              executionRole: agent.info.executionRole
+            });
           }
         }
         // Reread after the parent walk: a concurrent A -> B commit cannot leave this fleet
@@ -1435,6 +1444,30 @@ export function forgetRetiredWorker(conversationId: string): void {
   if (retiredWorkers.delete(conversationId)) retiredPersist?.();
 }
 
+// -------------------------------------------------------------------- spawn authorization
+
+export const SPAWN_AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
+
+const spawnAuthorizations = new Map<string, { grantedAt: number }>();
+
+export function grantSpawnAuthorization(conversationId: string): void {
+  spawnAuthorizations.set(conversationId, { grantedAt: Date.now() });
+}
+
+export function revokeSpawnAuthorization(conversationId: string): void {
+  spawnAuthorizations.delete(conversationId);
+}
+
+export function hasSpawnAuthorization(conversationId: string): boolean {
+  const record = spawnAuthorizations.get(conversationId);
+  if (!record) return false;
+  if (Date.now() - record.grantedAt > SPAWN_AUTHORIZATION_TTL_MS) {
+    spawnAuthorizations.delete(conversationId);
+    return false;
+  }
+  return true;
+}
+
 // -------------------------------------------------------------------- spawn
 
 export interface SpawnInput {
@@ -1450,6 +1483,10 @@ export interface SpawnInput {
    */
   context?: string | null;
   caller: Caller;
+  origin?: WorkerProvenanceOrigin;
+  orchestratorRunId?: string;
+  orchestratorStepId?: string;
+  executionRole?: OrchestratorExecutionRole;
 }
 
 export interface SpawnResult {
@@ -1678,6 +1715,27 @@ export function requestWorkerBootstraps(ids: readonly string[], runId?: string):
 export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResult {
   requireEnabled();
   input = { ...input, caller: exactCaller(input.caller) };
+
+  // Runtime admission check for worker policy
+  const isOrchestrator = input.origin === 'ORCHESTRATOR';
+  let wasAuthorizedAsk = false;
+  if (!isOrchestrator) {
+    const policy = getConfig().multiAgent.workerPolicy ?? 'off';
+    if (policy === 'off') {
+      throw new AgentError(
+        'WORKER_SPAWN_DISABLED: Normal chat worker spawning is disabled. Enable worker spawning in Settings -> Agents & automation or use Orchestrator.'
+      );
+    }
+    if (policy === 'ask') {
+      const convId = input.caller.conversationId;
+      if (!convId || !hasSpawnAuthorization(convId)) {
+        throw new AgentError('SPAWN_AUTHORIZATION_REQUIRED: Worker spawning requires user authorization.');
+      }
+      revokeSpawnAuthorization(convId);
+      wasAuthorizedAsk = true;
+    }
+  }
+
   requireFamilySelection(input.caller);
   let run = runForCaller(input.caller, true);
   if (run && activeSpawnStages.has(run)) {
@@ -1809,11 +1867,21 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
     if (!activeRun.agents.has(id)) ids.push(id);
   }
 
+  const effectiveOrigin: WorkerProvenanceOrigin = isOrchestrator
+    ? 'ORCHESTRATOR'
+    : wasAuthorizedAsk
+      ? 'NORMAL_AUTHORIZED'
+      : (input.origin ?? 'NORMAL_AUTO');
+
   const created: AgentInfo[] = [];
   const createdAgents: Agent[] = [];
   for (const [index, worker] of planned.entries()) {
     const id = ids[index] as string;
     const agent = makeWorker(id, worker.label || id, worker.task, worker.model, worker.reasoningEffort);
+    agent.info.origin = effectiveOrigin;
+    if (input.orchestratorRunId) agent.info.orchestratorRunId = input.orchestratorRunId;
+    if (input.orchestratorStepId) agent.info.orchestratorStepId = input.orchestratorStepId;
+    if (input.executionRole) agent.info.executionRole = input.executionRole;
     activeRun.agents.set(id, agent);
     stampOwner(activeRun);
     // A worker starts in the folder the prime was working in, so its first call can use the
@@ -4094,6 +4162,13 @@ export function agentInfoForOwnedConversation(conversationId: string): AgentInfo
   return dormant ? { ...dormant.info } : null;
 }
 
+export function agentInfoForAgentId(agentId: string, runId?: string): AgentInfo | null {
+  const targetRun = runId ? runs.get(runId) : [...runs.values()][0];
+  if (!targetRun) return null;
+  const agent = targetRun.agents.get(agentId);
+  return agent ? { ...agent.info } : null;
+}
+
 /**
  * Whether this conversation is a worker chat this app opened — in any state, ever.
  *
@@ -4804,4 +4879,5 @@ export function resetAgentsForTests(): void {
   endListeners.clear();
   workerReportListeners.clear();
   deliveredReportMessageIds.clear();
+  spawnAuthorizations.clear();
 }

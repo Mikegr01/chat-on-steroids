@@ -465,7 +465,7 @@ beforeEach(async () => {
   await saveConfig({
     ...defaultConfig(),
     sessions: { ...defaultConfig().sessions, record: true },
-    multiAgent: { enabled: true, maxWorkers: 3, allowUnattributedCalls: false, recoverAgentTabs: true }
+    multiAgent: { enabled: true, maxWorkers: 3, allowUnattributedCalls: false, recoverAgentTabs: true, workerPolicy: 'auto' }
   });
 });
 
@@ -1393,5 +1393,22 @@ describe('Stop IPC exact session and turn authority', () => {
     expect((await invoke({ id: session.id, expectedTurnId: 'ipc-stop-one' })).ok).toBe(false);
     const missing = await createSession({ title: 'No browser ownership', conversationId: null });
     expect(await invoke({ id: missing.id, expectedTurnId: 'ipc-stop-one' })).toMatchObject({ ok: false, error: 'session_not_recorded' });
+  });
+});
+
+describe('Agents authorization IPC', () => {
+  it('grants and checks spawn authorization over IPC', async () => {
+    const authorize = (payload: unknown) => handlers.get('agents:authorizeSpawn')!(null, payload) as Promise<any>;
+    const check = (payload: unknown) => handlers.get('agents:hasSpawnAuthorization')!(null, payload) as Promise<any>;
+    const convId = 'auth-ipc-conv-123';
+
+    const initial = await check({ conversationId: convId });
+    expect(initial).toEqual({ ok: true, data: { ok: true, authorized: false } });
+
+    const grant = await authorize({ conversationId: convId });
+    expect(grant).toEqual({ ok: true, data: { ok: true, authorized: true } });
+
+    const afterGrant = await check({ conversationId: convId });
+    expect(afterGrant).toEqual({ ok: true, data: { ok: true, authorized: true } });
   });
 });

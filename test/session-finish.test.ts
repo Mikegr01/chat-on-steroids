@@ -557,7 +557,7 @@ describe('session finish turn identity', () => {
       // read a context that is about to change. The hold is released rather than left held: the
       // answer may finish, and the reply obligation the pickup tree already tracks is what the
       // next automatic step will be decided from.
-      await saveConfig({ ...previous, multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true } });
+      await saveConfig({ ...previous, multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true, workerPolicy: 'auto' } });
       spawn({ workers: [{ task: 'finish the half I cannot' }], caller: { conversationId: hooks.caller.conversationId } });
       expect(bindConversation('worker-1', 'finish-wait-worker')).toBe(true);
       expect(waitingForSubAgents(hooks.caller.conversationId)).toBe(true);
@@ -575,7 +575,7 @@ describe('session finish turn identity', () => {
   it('decides as usual once the last sub-agent has reported', async () => {
     const previous = getConfig();
     try {
-      await saveConfig({ ...previous, multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true } });
+      await saveConfig({ ...previous, multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true, workerPolicy: 'auto' } });
       spawn({ workers: [{ task: 'finish the half I cannot' }], caller: { conversationId: hooks.caller.conversationId } });
       expect(bindConversation('worker-1', 'finish-wait-worker')).toBe(true);
       finishAgent({ conversationId: 'finish-wait-worker' }, 'both halves are done');
@@ -591,7 +591,7 @@ describe('session finish turn identity', () => {
     const previous = getConfig();
     try {
       await saveConfig({ ...previous, ui: { ...previous.ui, finishAction: 'notify' }, goal: { ...previous.goal, enabled: false },
-        multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true } });
+        multiAgent: { ...previous.multiAgent, enabled: true, waitForSubAgents: true, workerPolicy: 'auto' } });
       spawn({ workers: [{ task: 'keep the chat busy' }], caller: { conversationId: hooks.caller.conversationId } });
       expect(bindConversation('worker-1', 'finish-notice-worker')).toBe(true);
 

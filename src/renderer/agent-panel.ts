@@ -68,6 +68,16 @@ export function createAgentPanel(options: {
         const content = el('span', 'agent-card-content');
         const heading = el('span', 'agent-card-heading');
         heading.append(el('span', 'agent-status-dot'), el('strong', 'agent-card-name', identity));
+        if (worker.origin?.origin) {
+          const prov = worker.origin.origin === 'ORCHESTRATOR'
+            ? `ORCH · ${worker.origin.executionRole ?? 'worker'}`
+            : worker.origin.origin === 'NORMAL_AUTHORIZED'
+              ? 'Authorized'
+              : worker.origin.origin === 'NORMAL_AUTO'
+                ? 'Auto sub-agent'
+                : worker.origin.origin;
+          heading.append(el('span', 'chip chip-origin', prov));
+        }
         if (model) heading.append(el('span', 'agent-card-model', model));
         const statusLabel: Record<string, string> = { working: 'Working', history: 'History', invited: 'opening', detached: 'no tab' };
         content.append(heading, el('span', 'agent-card-task', () => task || `${t('Original assignment')}: ${original}`),

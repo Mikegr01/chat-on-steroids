@@ -179,6 +179,7 @@ import {
   stageWorkerConversationFinish,
   workerConversationGone,
   workerRevivalDeliveredSince,
+  agentInfoForAgentId,
   type WorkerRevival
 } from './agents.js';
 import {
@@ -2335,12 +2336,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         const worker = agentInfoForOwnedConversation(id);
         if (worker?.role === 'worker') {
           const prime = primeForOwnedConversation(id);
-          await noteChatOrigin(id, {
+          const originPayload: SessionOrigin = {
             kind: 'worker',
             fromSessionId: prime ? (await findSessionByConversation(prime, { requireUnique: true }))?.id ?? null : null,
             agentId: worker.id,
             task: worker.task
-          });
+          };
+          if (worker.origin !== undefined) originPayload.origin = worker.origin;
+          if (worker.orchestratorRunId !== undefined) originPayload.orchestratorRunId = worker.orchestratorRunId;
+          if (worker.orchestratorStepId !== undefined) originPayload.orchestratorStepId = worker.orchestratorStepId;
+          if (worker.executionRole !== undefined) originPayload.executionRole = worker.executionRole;
+          await noteChatOrigin(id, originPayload);
         }
       }
       const result = await recordChatObservations(id, observations, agent);
@@ -9160,14 +9166,21 @@ type AckStatus = 'sent' | 'failed';
 async function commandOrigin(id: string): Promise<SessionOrigin | null> {
   const spec = commands.find((entry) => entry.id === id)?.spec;
   if (!spec || spec.type === 'stop') return null;
-  if (spec.type === 'worker')
-    return {
+  if (spec.type === 'worker') {
+    const workerInfo = agentInfoForAgentId(spec.agent, spec.runId);
+    const originPayload: SessionOrigin = {
       kind: 'worker',
       fromSessionId: swarmRunning(spec.runId) && primeConversation(spec.runId)
         ? (await findSessionByConversation(primeConversation(spec.runId)!, { requireUnique: true }))?.id ?? null : null,
       agentId: spec.agent,
       task: spec.task
     };
+    if (workerInfo?.origin !== undefined) originPayload.origin = workerInfo.origin;
+    if (workerInfo?.orchestratorRunId !== undefined) originPayload.orchestratorRunId = workerInfo.orchestratorRunId;
+    if (workerInfo?.orchestratorStepId !== undefined) originPayload.orchestratorStepId = workerInfo.orchestratorStepId;
+    if (workerInfo?.executionRole !== undefined) originPayload.executionRole = workerInfo.executionRole;
+    return originPayload;
+  }
   // A revival opens no chat, so it names none. The conversation it lands in was recorded as a
   // worker chat when it was first opened, and rewriting that origin now would only overwrite
   // the task this worker was actually created for with whatever it is being asked next.

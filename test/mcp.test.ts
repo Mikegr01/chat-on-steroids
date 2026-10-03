@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { effectiveCapabilities, defaultConfig, getConfig } from '../src/main/config.js';
+import { effectiveCapabilities, defaultConfig, getConfig, saveConfig, initConfigPath } from '../src/main/config.js';
 import { lastRequestAt, selfTestHeaders, startMcpServer, tunnelProbeHeaders, type McpEndpoint } from '../src/main/mcp/server.js';
 import { lastToolCallAt, type ToolContext } from '../src/main/mcp/tools.js';
 import { friendlyError } from '../src/main/mcp/kernel.js';
@@ -246,6 +246,7 @@ function allCaps(): Capabilities {
 
 beforeAll(async () => {
   base = await makeTempDir('clf-mcp-');
+  initConfigPath(base);
   // This suite calls real tools, and calling a tool records it. Recording is on by
   // default now, so without a directory of its own the recorder wrote session folders
   // into the process's working directory — which for a test run is the repository.
@@ -1134,24 +1135,30 @@ describe('capability gating', () => {
 
   it('teaches primes to reuse sleeping workers before spawning replacements', async () => {
     ctx.agentTools = true;
-    const initialized = await core('initialize', {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'test-client', version: '1.0.0' }
-    });
-    const instructions: string = initialized.body.result.instructions ?? '';
-    expect(instructions).toMatch(/Reuse\s+a sleeping worker for related follow-up work before spawning a replacement/);
-    expect(instructions).toContain('Only terminal workers whose context is full need replacing');
-    expect(instructions).toContain('Reports arrive only with tool results; they do not restart an idle prime');
-    expect(instructions).toContain('do not claim delegated verification is complete before reading its report');
+    const prev = getConfig();
+    await saveConfig({ ...prev, multiAgent: { ...prev.multiAgent, workerPolicy: 'auto' } });
+    try {
+      const initialized = await core('initialize', {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test-client', version: '1.0.0' }
+      });
+      const instructions: string = initialized.body.result.instructions ?? '';
+      expect(instructions).toMatch(/Reuse\s+a sleeping worker for related follow-up work before spawning a replacement/);
+      expect(instructions).toContain('Only terminal workers whose context is full need replacing');
+      expect(instructions).toContain('Reports arrive only with tool results; they do not restart an idle prime');
+      expect(instructions).toContain('do not claim delegated verification is complete before reading its report');
 
-    const tools = await core('tools/list');
-    const agentsDescription = (tools.body.result.tools as Array<{ name: string; description?: string }>).find(
-      (tool) => tool.name === 'agents'
-    )?.description;
-    expect(agentsDescription).toContain('Reuse a suitable sleeping worker with message before spawn');
-    expect(agentsDescription).toContain('status once to collect pending reports before finalizing');
-    expect(agentsDescription).toContain('state that review is pending');
+      const tools = await core('tools/list');
+      const agentsDescription = (tools.body.result.tools as Array<{ name: string; description?: string }>).find(
+        (tool) => tool.name === 'agents'
+      )?.description;
+      expect(agentsDescription).toContain('Reuse a suitable sleeping worker with message before spawn');
+      expect(agentsDescription).toContain('status once to collect pending reports before finalizing');
+      expect(agentsDescription).toContain('state that review is pending');
+    } finally {
+      await saveConfig(prev);
+    }
   });
 
   it('rejects action-specific agent fields instead of silently ignoring them', async () => {

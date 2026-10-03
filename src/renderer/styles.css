@@ -2569,6 +2569,73 @@ input[readonly] {
   color: var(--red);
 }
 
+.chip.chip-origin {
+  background: var(--wash);
+  color: var(--blue);
+}
+
+.orch-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--faint);
+  font-size: calc(11px * var(--text-scale, 1));
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.orch-toggle:hover {
+  border-color: var(--line-strong, var(--line));
+  color: var(--ink);
+}
+
+.orch-toggle.is-active {
+  background: var(--wash);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.orch-popover-row {
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.orch-popover-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.orch-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  margin: 4px 0;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  font-size: calc(12px * var(--text-scale, 1));
+  color: var(--ink);
+}
+
+.orch-status-row .orch-status-text {
+  font-weight: 500;
+}
+
+.orch-status-row .orch-status-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
 /* -------------------------------------------------- compaction + panes */
 
 /* The single column is `minmax(0, 1fr)` and never plain `auto`. An implicit `auto` track is

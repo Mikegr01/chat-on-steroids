@@ -161,6 +161,9 @@ const DEFAULT_GOAL: GoalSettings = {
 // ("too many requests"), which strands the run rather than making it faster.
 const DEFAULT_MULTI_AGENT: MultiAgentSettings = {
   enabled: false,
+  workerPolicy: 'off',
+  workerModelPolicy: 'auto',
+  verifierModelPolicy: 'auto',
   maxWorkers: 2,
   allowUnattributedCalls: false,
   // Off: Goal/Loop chats are always recovered, and reopening anything else — a worker, a prime,
@@ -185,6 +188,9 @@ const ALL_FIRST_LAUNCH_CAPABILITIES: Capabilities = Object.fromEntries(
 const FIRST_LAUNCH_MULTI_AGENT: MultiAgentSettings = {
   ...DEFAULT_MULTI_AGENT,
   enabled: true,
+  workerPolicy: 'off',
+  workerModelPolicy: 'auto',
+  verifierModelPolicy: 'auto',
   allowUnattributedCalls: true
 };
 
@@ -375,15 +381,32 @@ const configSchema = z.object({
   multiAgent: z
     .object({
       enabled: z.boolean().optional().default(DEFAULT_MULTI_AGENT.enabled),
-    defaultModel: z.string().max(80).optional(),
-    defaultReasoning: z.enum(['', ...REASONING_EFFORTS]).optional(),
+      workerPolicy: z.enum(['off', 'ask', 'auto']).optional().default(DEFAULT_MULTI_AGENT.workerPolicy ?? 'off'),
+      workerModelPolicy: z.enum(['auto', 'inherit_prime', 'specific_model']).optional().default(DEFAULT_MULTI_AGENT.workerModelPolicy ?? 'auto'),
+      workerSpecificModel: z.string().max(80).optional(),
+      verifierModelPolicy: z.enum(['auto', 'inherit_prime', 'specific_model']).optional().default(DEFAULT_MULTI_AGENT.verifierModelPolicy ?? 'auto'),
+      verifierSpecificModel: z.string().max(80).optional(),
+      defaultModel: z.string().max(80).optional(),
+      defaultReasoning: z.enum(['', ...REASONING_EFFORTS]).optional(),
       maxWorkers: z.number().int().min(1).max(8).optional().default(DEFAULT_MULTI_AGENT.maxWorkers),
       allowUnattributedCalls: z.boolean().optional().default(DEFAULT_MULTI_AGENT.allowUnattributedCalls),
       recoverAgentTabs: z.boolean().optional().default(DEFAULT_MULTI_AGENT.recoverAgentTabs),
       waitForSubAgents: z.boolean().optional().default(DEFAULT_MULTI_AGENT.waitForSubAgents ?? false)
     })
-    .optional()
-    .default({ ...DEFAULT_MULTI_AGENT, waitForSubAgents: DEFAULT_MULTI_AGENT.waitForSubAgents ?? false }),
+      .default({
+        enabled: DEFAULT_MULTI_AGENT.enabled,
+        workerPolicy: DEFAULT_MULTI_AGENT.workerPolicy ?? 'off',
+        workerModelPolicy: DEFAULT_MULTI_AGENT.workerModelPolicy ?? 'auto',
+        workerSpecificModel: DEFAULT_MULTI_AGENT.workerSpecificModel,
+        verifierModelPolicy: DEFAULT_MULTI_AGENT.verifierModelPolicy ?? 'auto',
+        verifierSpecificModel: DEFAULT_MULTI_AGENT.verifierSpecificModel,
+        defaultModel: DEFAULT_MULTI_AGENT.defaultModel,
+        defaultReasoning: DEFAULT_MULTI_AGENT.defaultReasoning,
+        maxWorkers: DEFAULT_MULTI_AGENT.maxWorkers,
+        allowUnattributedCalls: DEFAULT_MULTI_AGENT.allowUnattributedCalls,
+        recoverAgentTabs: DEFAULT_MULTI_AGENT.recoverAgentTabs,
+        waitForSubAgents: DEFAULT_MULTI_AGENT.waitForSubAgents ?? false
+      }),
   // An empty model id is repaired rather than rejected: the id is free text from a
   // provider listing that changes weekly, and a config that lost it must still load with
   // every root and permission in it intact.

@@ -325,6 +325,8 @@ const api = {
   // Clearing the prime ends the run; clearing a worker frees that slot. Which of the two
   // happened comes back in the result — the renderer does not decide it.
   clearAgent: (id: string, runId?: string) => call<ClearAgentResult>('swarm:clearAgent', { id, runId }),
+  authorizeSpawn: (conversationId: string) => call<{ ok: boolean; authorized: boolean }>('agents:authorizeSpawn', { conversationId }),
+  hasSpawnAuthorization: (conversationId: string) => call<{ ok: boolean; authorized: boolean }>('agents:hasSpawnAuthorization', { conversationId }),
 
   onStateChanged: (listener: (state: AppState) => void): (() => void) => {
     const wrapped = (_event: unknown, state: AppState): void => listener(state);
