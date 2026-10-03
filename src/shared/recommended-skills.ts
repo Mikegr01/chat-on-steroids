@@ -25,23 +25,60 @@ export const RECOMMENDED_SKILLS: readonly RecommendedSkill[] = [
     `
 # Code review
 
-Use this when asked to review a diff, a pull request or recently changed files.
+Perform a read-only, defect-first verification and review of a proposed change.
+
+## Trigger & Scope
+
+- **Trigger:** Use when asked to review a diff, uncommitted working-tree changes, a pull request, or candidate implementation before merge.
+- **Non-Trigger:** Do not invoke for generating code, answering general language questions, or when no change exists.
 
 ## Method
 
-1. **Understand the intent first.** Read the description, the linked issue and the tests. Say in one sentence what the change is meant to do.
-2. **Read the whole change**, not just the first file. Note every file touched and why.
-3. **Check correctness against the intent.** For each changed function, ask what inputs reach it, what it returns on every path, and what happens on errors, empty values, concurrency and retries.
-4. **Check safety.** User input reaching a shell, file path, SQL, HTML or URL; secrets in logs; permissions widened; data deleted or overwritten.
-5. **Check the tests.** Does a test fail without the change? Are the edge cases from step 3 covered?
-6. **Run what you can:** the tests, the type checker, the linter.
+1. **Understand intent & establish baseline.** Read the task description and relevant issue. Check the repository branch, HEAD, and \`git status --short\`. Never discard uncommitted user work.
+2. **Read the whole diff**, not just the first file. Inspect surrounding code for data flow and lifecycle.
+3. **Check correctness & edge cases.** Ask what inputs reach each changed path, what is returned on errors, null/empty collections, concurrency, retries, and restarts.
+4. **Scan for bypasses & safety.** Detect introduced shortcuts: \`@ts-ignore\`, \`as any\`, silenced errors, or weakened assertions. Check user input sanitization, file path bounds, and secret leakage.
+5. **Independently verify.** Run the narrowest relevant test suite, type-checker, and build. Do not trust unverified claims.
+6. **Validate commit boundary.** Ensure no unintended files, debug logs, or transient artifacts are touched.
 
 ## Reporting
 
-- Report **findings, not impressions.** Each finding names the file and line, the concrete failure ("with an empty list this returns undefined and the caller crashes"), and a suggested fix.
-- Order by severity: bugs and security first, then missing tests, then clarity.
-- Leave out style preferences the project's formatter would settle, and anything you are not confident about. Five real findings beat twenty maybes.
-- If nothing is wrong, say so plainly and mention what you checked.
+- Report **findings, not impressions.** Each finding names \`path/to/file:line\`, the concrete failure mechanism, and a minimal suggested fix.
+- Order by severity: P0/P1 bugs and security first, then missing tests, then clarity.
+- Distinguish:
+  * **CLAIMED**: what was claimed.
+  * **OBSERVED**: what was inspected in the diff.
+  * **VERIFIED**: what passed independent test execution.
+- If nothing is wrong, state \`No qualifying findings\` plainly and list the exact checks executed.
+`),
+  skill('autonomous-dev-workflow', 'Autonomous dev workflow',
+    'Coordinate multi-step repository engineering from baseline inspection and test-driven repair through layered verification and evidence reporting.',
+    `
+# Autonomous dev workflow
+
+Coordinate substantial repository tasks from initial baseline through implementation and verification. Work autonomously and produce verified evidence.
+
+## Trigger & Scope
+
+- **Trigger:** Use when assigned multi-step repository engineering tasks: bug reproduction and repair, feature implementation, refactoring, or release preflight.
+- **Non-Trigger:** Do not invoke for read-only reviews (delegate to Code review / Review Agent), simple conceptual explanations, or when no code change is needed.
+
+## Rules
+
+- **Inspect first:** Establish repository root, current branch, HEAD, and \`git status --short\` before touching code.
+- **Preserve user work:** Never reset, stash, or discard uncommitted user modifications.
+- **Test-first repair (RED -> GREEN):** Reproduce defects with a failing test before editing production code.
+- **Minimal surgical fix:** Make the smallest coherent change that resolves the problem.
+- **Layered verification:** Run unit tests, typechecks, build, and diff-check. Never use bypasses (\`@ts-ignore\`, \`as any\`) to pass checks.
+
+## Workflow
+
+1. **Rebind to Live State:** Check git status, branch, and HEAD. Read project AGENTS.md / CONTRIBUTING.md.
+2. **Establish Baseline (RED):** Write a failing test that reproduces the defect through the public interface.
+3. **Implement (GREEN):** Make the minimal production fix to make the test pass.
+4. **Layered Verification:** Run adjacent tests, full package tests, typecheck, and build.
+5. **Adversarial Audit:** Check boundary conditions, error handling, and commit boundary.
+6. **Finish with Evidence:** Report root cause, files changed, commands run, test pass counts, and residual risks.
 `),
   skill('debug-systematically', 'Debug systematically',
     'Find the root cause of a bug with evidence before changing code, then fix it with a test that proves it.',
