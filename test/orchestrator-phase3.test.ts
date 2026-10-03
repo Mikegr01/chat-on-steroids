@@ -7,6 +7,7 @@ import {
   spawn,
   grantSpawnAuthorization,
   hasSpawnAuthorization,
+  onSwarmPersistNow,
   onSpawnRequest,
   swarmState,
   type CommittedWorkerReport,
@@ -14,6 +15,7 @@ import {
 } from '../src/main/agents.js';
 import { resetBridgeForTests } from '../src/main/bridge.js';
 import {
+  buildVerifierTask,
   createOrchestratorDriver,
   type OrchestratorDriver
 } from '../src/main/orchestrator/driver.js';
@@ -457,6 +459,20 @@ describe('ORCHESTRATOR_V2_PHASE3: Required Scenarios', () => {
     expect(verifierSpec.model).toBe('gpt-5.6-sol');
   });
 
+  it('10b. VERIFIER PROMPT: carries worker evidence, criteria, and an explicit terminal verdict contract', () => {
+    const prompt = buildVerifierTask({
+      id: 's1', index: 0, title: 'Step 1', instructions: 'Inspect the implementation',
+      acceptanceCriteria: ['Tests pass', 'No source mutation by verifier'], status: 'VERIFYING',
+      generation: 1, attemptCount: 1, fileEffects: [],
+      workerResult: { id: 'm1', summary: 'Implemented the change' }
+    });
+    expect(prompt).toContain('Implemented the change');
+    expect(prompt).toContain('Tests pass');
+    expect(prompt).toContain('VERDICT: PASS');
+    expect(prompt).toContain('VERDICT: DEFECT');
+    expect(prompt).toContain('Do not modify');
+  });
+
   // 11. PROVENANCE
   // normal AUTO spawn -> NORMAL_AUTO
   // Orchestrator worker -> ORCHESTRATOR + worker
@@ -599,6 +615,7 @@ describe('ORCHESTRATOR_V2_PHASE3: Required Scenarios', () => {
     const unsubscribe = onSpawnRequest((workers) => {
       requestedBootstraps.push(...workers);
     });
+    onSwarmPersistNow(async () => undefined);
 
     try {
       const run = await driver.createRun({
@@ -655,7 +672,26 @@ describe('ORCHESTRATOR_V2_PHASE3: Required Scenarios', () => {
       const updatedRun = driver.getRun(run.id);
       expect(updatedRun?.steps[0]?.generation).toBe(2);
     } finally {
+      onSwarmPersistNow(null);
       unsubscribe();
+    }
+  });
+
+  it('16b. REAL AGENTS DURABILITY: crosses the immediate swarm persistence barrier before bootstrap publication', async () => {
+    let durableWrites = 0;
+    onSwarmPersistNow(async () => { durableWrites += 1; });
+    const run = await driver.createRun({
+      id: 'run-real-agents-durable',
+      ownerConversationId: 'conv-real-durable',
+      projectId: 'proj-1',
+      objective: 'Durable real-agent spawn',
+      steps: [{ id: 'step-real-1', title: 'Step 1', instructions: 'Inspect safely', acceptanceCriteria: [] }]
+    });
+    try {
+      await driver.assignCurrentStepWorker(run.id, 'worker-1', { spawnAgent: true, primeModel: 'gpt-5.6' });
+      expect(durableWrites).toBeGreaterThan(0);
+    } finally {
+      onSwarmPersistNow(null);
     }
   });
 

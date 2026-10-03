@@ -64,6 +64,7 @@ import { bridgePortSelection } from './bridge-ports.js';
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runDiagnostics } from './diagnostics.js';
+import { getOrchestratorRuntimeDriver, stagesToStepInputs } from './orchestrator/driver.js';
 import { getSystemHealthSnapshot, runSystemHealthCheck, generateSanitizedDiagnosticsReport } from './system-diagnostics.js';
 import { resolveCustomUserData } from './app-identity.js';
 import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, onLog } from './logger.js';
@@ -1311,6 +1312,29 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   handle('agents:hasSpawnAuthorization', async (payload) => {
     const { conversationId } = z.object({ conversationId: z.string().min(1) }).parse(payload);
     return { ok: true, authorized: hasSpawnAuthorization(conversationId) };
+  });
+
+  handle('orchestrator:start', async (payload) => {
+    const { sessionId, objective, stages } = z.object({
+      sessionId: z.string().min(8).max(64).regex(/^[0-9a-z-]+$/i),
+      objective: z.string().trim().min(1).max(20_000),
+      stages: z.array(z.string().trim().min(1).max(20_000)).min(1).max(32)
+    }).parse(payload);
+    const session = await getSession(sessionId);
+    if (!session?.conversationId) throw new Error('This session has no current ChatGPT conversation');
+    const selectedModel = session.selectedModel?.conversationId === session.conversationId
+      ? session.selectedModel.model
+      : undefined;
+    const runId = `orch-${randomUUID()}`;
+    const run = await getOrchestratorRuntimeDriver().startRun({
+      id: runId,
+      ownerConversationId: session.conversationId,
+      projectId: session.projectId ?? '',
+      objective,
+      steps: stagesToStepInputs(stages)
+    }, { primeModel: selectedModel, spawnAgent: true });
+    logInfo(`orchestrator: started ${run.id} for conversation ${session.conversationId}`);
+    return run;
   });
 
 

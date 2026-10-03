@@ -213,6 +213,7 @@ function rememberDraft(): void {
   });
 }
 let skillPicker: ReturnType<typeof initSkills> | undefined;
+let orchEnabled = false;
 function restoreDraft(): void {
   skillPicker?.close();
   cancelGoalRequest();
@@ -4374,6 +4375,7 @@ async function sendComposer(delivery?: 'finish', plan?: string[], planObjective?
   if (!modelSettings) { toast(t("Model discovery could not confirm your selection. Choose an available model and thinking effort, then send again.")); return false; }
   const sessionId = selectedId;
   const generation = selectionGeneration;
+  const orchestratorRequested = orchEnabled;
   const chosenMode = delivery ?? $<HTMLSelectElement>('sendMode').value;
   const mode = chosenMode === 'tool' ? 'auto' : chosenMode === 'after-turn' && controlledSessionId === selectedId && controlledSelection === selectionGeneration && controlledQueueAtFinish ? 'finish' : chosenMode;
   const dueAt = Date.now();
@@ -4425,6 +4427,27 @@ async function sendComposer(delivery?: 'finish', plan?: string[], planObjective?
     if (sessionId === null && selectionGeneration === generation) {
       pendingNewInput = { id: result.id, generation };
       await adoptAcceptedOpening(result);
+    }
+    if (orchestratorRequested) {
+      const orchestratorSessionId = result.sessionId ?? result.deliveredSessionId ?? sessionId ?? selectedId;
+      if (!orchestratorSessionId) {
+        toast(t("ORCH could not start because the ChatGPT conversation was not bound yet."));
+      } else {
+        const orchestratorRun = await run(api.startOrchestratorRun(
+          orchestratorSessionId,
+          planObjective ?? objective ?? text,
+          plan ?? [text]
+        ));
+        if (orchestratorRun) {
+          const statusRow = document.getElementById('orchStatus');
+          if (statusRow) {
+            statusRow.hidden = false;
+            statusRow.replaceChildren(
+              el('span', 'orch-status-text', () => t("ORCH Active · Worker/verifier execution started"))
+            );
+          }
+        }
+      }
     }
     $('composerStatus').textContent = '';
     void refreshInputQueue();
@@ -4888,8 +4911,6 @@ export function initChat(next: Deps): void {
     if (taskPlans.has(draftKey())) cancelTaskPlan();
     else { taskPlans.set(draftKey(), { text: '', requestId: null, stages: null, sending: false, progress: null, error: null }); paintTaskPlan(); $('chatInput').focus(); }
   });
-
-  let orchEnabled = false;
 
   function paintOrch(): void {
     const toggle = document.getElementById('orchToggle');

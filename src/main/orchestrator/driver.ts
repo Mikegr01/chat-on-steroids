@@ -17,12 +17,14 @@ import type {
 } from './types.js';
 import {
   onWorkerReportCommitted,
+  persistCriticalSwarmNow,
   stageSpawn,
   requestWorkerBootstraps,
   type CommittedWorkerReport
 } from '../agents.js';
 import { getChatModels } from '../chat-models.js';
 import { getConfig } from '../config.js';
+import { logWarn } from '../logger.js';
 import type { WorkerProvenanceOrigin, OrchestratorExecutionRole } from '../../shared/types.js';
 
 export interface ParsedVerificationVerdict {
@@ -75,6 +77,30 @@ export function stagesToStepInputs(stages: string[]): StepInput[] {
       acceptanceCriteria: []
     };
   });
+}
+
+export function buildVerifierTask(step: StepRecord): string {
+  const criteria = step.acceptanceCriteria.length
+    ? step.acceptanceCriteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')
+    : 'No explicit acceptance criteria were provided; verify the step instructions and reported result.';
+  return [
+    `Verify step: ${step.title}`,
+    '',
+    'Step instructions:',
+    step.instructions,
+    '',
+    'Worker result:',
+    step.workerResult?.summary ?? '(no worker summary recorded)',
+    '',
+    'Acceptance criteria:',
+    criteria,
+    '',
+    'Do not modify files or state. Inspect and verify only.',
+    'End with exactly one explicit verdict line:',
+    'VERDICT: PASS',
+    'or',
+    'VERDICT: DEFECT'
+  ].join('\n');
 }
 
 export interface ModelPolicyResolution {
@@ -167,6 +193,10 @@ export interface StartupReconciliationResult {
 }
 
 export interface OrchestratorDriver {
+  startRun(
+    input: CreateRunInput,
+    options?: { primeModel?: string; spawnAgent?: boolean }
+  ): Promise<OrchestratorRun>;
   createRun(input: CreateRunInput): Promise<OrchestratorRun>;
   getRun(runId: string): OrchestratorRun | undefined;
   assignCurrentStepWorker(
@@ -186,6 +216,7 @@ export interface OrchestratorDriver {
     options?: { primeModel?: string; spawnAgent?: boolean }
   ): Promise<VerifierTaskSpec>;
   handleVerifierReport(runId: string, verifierId: string, rawText: string): Promise<OrchestratorRun>;
+  advanceCommittedReport(report: CommittedWorkerReport): Promise<{ handled: boolean; reason?: string }>;
   prepareRepair(
     runId: string,
     workerId?: string,
@@ -201,11 +232,14 @@ export function createOrchestratorDriver(): OrchestratorDriver {
   const activeVerifiers = new Map<string, string>(); // runId -> assigned verifierId
   const assignedWorkerSpecs = new Map<string, AssignedWorkerSpec>(); // key: `${runId}:${workerId}`
   const verifierSpecs = new Map<string, VerifierTaskSpec>(); // key: `${runId}:${verifierId}`
+  const primeModels = new Map<string, string | undefined>();
   let unregisterReportListener: (() => void) | null = null;
 
-  // Driver subscribes to committed worker reports
-  unregisterReportListener = onWorkerReportCommitted((_report: CommittedWorkerReport) => {
-    // Registered for reactive awareness; caller or driver coordinates delivery per run
+  // A real ORCH run advances only from the Agents system's committed report boundary.
+  unregisterReportListener = onWorkerReportCommitted((report: CommittedWorkerReport) => {
+    void advanceCommittedReportImpl(report).catch((error) => {
+      logWarn(`orchestrator: committed report routing failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
 
   function currentStep(run: OrchestratorRun): StepRecord {
@@ -216,6 +250,18 @@ export function createOrchestratorDriver(): OrchestratorDriver {
 
   async function createRunImpl(input: CreateRunInput): Promise<OrchestratorRun> {
     return createRun(input);
+  }
+
+  async function startRunImpl(
+    input: CreateRunInput,
+    options?: { primeModel?: string; spawnAgent?: boolean }
+  ): Promise<OrchestratorRun> {
+    primeModels.set(input.id, options?.primeModel);
+    await createRun(input);
+    return assignCurrentStepWorkerImpl(input.id, undefined, {
+      primeModel: options?.primeModel,
+      spawnAgent: options?.spawnAgent ?? true
+    });
   }
 
   function getRunImpl(runId: string): OrchestratorRun | undefined {
@@ -234,9 +280,32 @@ export function createOrchestratorDriver(): OrchestratorDriver {
     const run = getRun(runId);
     if (!run) throw new Error('RUN_NOT_FOUND');
     const step = currentStep(run);
-    const assignedId = workerId ?? `worker-${step.index + 1}`;
+    let assignedId = workerId ?? `worker-${step.index + 1}`;
 
     const modelResolution = resolveModelPolicy('worker', options?.primeModel);
+
+    if (options?.spawnAgent && getConfig().multiAgent.enabled) {
+      const staged = stageSpawn({
+        workers: [{
+          label: assignedId,
+          task: step.instructions,
+          model: modelResolution.model
+        }],
+        caller: { conversationId: run.ownerConversationId },
+        origin: 'ORCHESTRATOR',
+        orchestratorRunId: runId,
+        orchestratorStepId: step.id,
+        executionRole: 'worker'
+      });
+      if (!(await persistCriticalSwarmNow())) {
+        staged.rollback();
+        throw new Error('ORCHESTRATOR_DURABILITY_UNAVAILABLE');
+      }
+      staged.commit();
+      assignedId = staged.created[0]?.id ?? assignedId;
+      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
+    }
+
     const workerSpec: AssignedWorkerSpec = {
       runId,
       stepId: step.id,
@@ -250,23 +319,6 @@ export function createOrchestratorDriver(): OrchestratorDriver {
       orchestratorStepId: step.id
     };
     assignedWorkerSpecs.set(`${runId}:${assignedId}`, workerSpec);
-
-    if (options?.spawnAgent && getConfig().multiAgent.enabled) {
-      const staged = stageSpawn({
-        workers: [{
-          label: assignedId,
-          task: step.instructions,
-          model: workerSpec.model
-        }],
-        caller: { conversationId: run.ownerConversationId },
-        origin: 'ORCHESTRATOR',
-        orchestratorRunId: runId,
-        orchestratorStepId: step.id,
-        executionRole: 'worker'
-      });
-      staged.commit();
-      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
-    }
 
     return assignWorker(runId, step.id, assignedId);
   }
@@ -322,13 +374,35 @@ export function createOrchestratorDriver(): OrchestratorDriver {
       throw new Error('SELF_VERIFICATION_FORBIDDEN: verifier cannot be the mutation worker');
     }
 
-    activeVerifiers.set(runId, verifierId);
-
     const modelResolution = resolveModelPolicy('verifier', options?.primeModel);
+    let actualVerifierId = verifierId;
+
+    if (options?.spawnAgent && getConfig().multiAgent.enabled) {
+      const staged = stageSpawn({
+        workers: [{
+          label: verifierId,
+          task: buildVerifierTask(step),
+          model: modelResolution.model
+        }],
+        caller: { conversationId: run.ownerConversationId },
+        origin: 'ORCHESTRATOR',
+        orchestratorRunId: runId,
+        orchestratorStepId: step.id,
+        executionRole: 'verifier'
+      });
+      if (!(await persistCriticalSwarmNow())) {
+        staged.rollback();
+        throw new Error('ORCHESTRATOR_DURABILITY_UNAVAILABLE');
+      }
+      staged.commit();
+      actualVerifierId = staged.created[0]?.id ?? verifierId;
+      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
+    }
+
     const spec: VerifierTaskSpec = {
       runId,
       stepId: step.id,
-      verifierId,
+      verifierId: actualVerifierId,
       title: step.title,
       instructions: step.instructions,
       acceptanceCriteria: [...step.acceptanceCriteria],
@@ -341,24 +415,8 @@ export function createOrchestratorDriver(): OrchestratorDriver {
       orchestratorRunId: runId,
       orchestratorStepId: step.id
     };
-    verifierSpecs.set(`${runId}:${verifierId}`, spec);
-
-    if (options?.spawnAgent && getConfig().multiAgent.enabled) {
-      const staged = stageSpawn({
-        workers: [{
-          label: verifierId,
-          task: `Verify step: ${step.title}\n${step.instructions}`,
-          model: spec.model
-        }],
-        caller: { conversationId: run.ownerConversationId },
-        origin: 'ORCHESTRATOR',
-        orchestratorRunId: runId,
-        orchestratorStepId: step.id,
-        executionRole: 'verifier'
-      });
-      staged.commit();
-      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
-    }
+    activeVerifiers.set(runId, actualVerifierId);
+    verifierSpecs.set(`${runId}:${actualVerifierId}`, spec);
 
     return spec;
   }
@@ -382,6 +440,54 @@ export function createOrchestratorDriver(): OrchestratorDriver {
 
     activeVerifiers.delete(runId);
     return updated;
+  }
+
+  async function advanceCommittedReportImpl(
+    report: CommittedWorkerReport
+  ): Promise<{ handled: boolean; reason?: string }> {
+    if (report.agentInfo.origin !== 'ORCHESTRATOR' || !report.agentInfo.orchestratorRunId) {
+      return { handled: false, reason: 'NOT_ORCHESTRATOR' };
+    }
+    const runId = report.agentInfo.orchestratorRunId;
+    const run = getRun(runId);
+    if (!run) return { handled: false, reason: 'RUN_NOT_FOUND' };
+    const step = currentStep(run);
+    if (report.agentInfo.orchestratorStepId !== step.id) {
+      return { handled: false, reason: 'WRONG_STEP' };
+    }
+    const primeModel = primeModels.get(runId);
+
+    if (report.agentInfo.executionRole === 'worker' || report.agentInfo.executionRole === 'repair_worker') {
+      const accepted = await handleCommittedWorkerReportImpl(runId, report);
+      if (!accepted.handled) return { handled: false, reason: accepted.reason };
+      if (accepted.alreadyAccepted) return { handled: true };
+      const verifying = getRun(runId);
+      if (!verifying || verifying.status !== 'VERIFYING') return { handled: false, reason: 'NOT_VERIFYING' };
+      const current = currentStep(verifying);
+      await dispatchVerifierImpl(runId, `verifier-${current.index + 1}-g${current.generation}`, {
+        primeModel,
+        spawnAgent: true
+      });
+      return { handled: true };
+    }
+
+    if (report.agentInfo.executionRole === 'verifier') {
+      const activeVerifier = activeVerifiers.get(runId);
+      if (activeVerifier && activeVerifier !== report.workerId) {
+        return { handled: false, reason: 'WRONG_VERIFIER' };
+      }
+      const updated = await handleVerifierReportImpl(runId, report.workerId, report.result);
+      if (updated.status === 'RUNNING') {
+        const next = currentStep(updated);
+        await assignCurrentStepWorkerImpl(runId, `worker-${next.index + 1}-g${next.generation}`, {
+          primeModel,
+          spawnAgent: true
+        });
+      }
+      return { handled: true };
+    }
+
+    return { handled: false, reason: 'UNKNOWN_EXECUTION_ROLE' };
   }
 
   async function prepareRepairImpl(
@@ -468,9 +574,11 @@ export function createOrchestratorDriver(): OrchestratorDriver {
     activeVerifiers.clear();
     assignedWorkerSpecs.clear();
     verifierSpecs.clear();
+    primeModels.clear();
   }
 
   return {
+    startRun: startRunImpl,
     createRun: createRunImpl,
     getRun: getRunImpl,
     assignCurrentStepWorker: assignCurrentStepWorkerImpl,
@@ -478,10 +586,23 @@ export function createOrchestratorDriver(): OrchestratorDriver {
     handleCommittedWorkerReport: handleCommittedWorkerReportImpl,
     dispatchVerifier: dispatchVerifierImpl,
     handleVerifierReport: handleVerifierReportImpl,
+    advanceCommittedReport: advanceCommittedReportImpl,
     prepareRepair: prepareRepairImpl,
     cancelActiveRun: cancelActiveRunImpl,
     recordFileEffect: recordFileEffectImpl,
     reconcileOnStartup: reconcileOnStartupImpl,
     dispose: disposeImpl
   };
+}
+
+let runtimeDriver: OrchestratorDriver | null = null;
+
+export function getOrchestratorRuntimeDriver(): OrchestratorDriver {
+  runtimeDriver ??= createOrchestratorDriver();
+  return runtimeDriver;
+}
+
+export function resetOrchestratorRuntimeDriverForTests(): void {
+  runtimeDriver?.dispose();
+  runtimeDriver = null;
 }

@@ -327,6 +327,8 @@ const api = {
   clearAgent: (id: string, runId?: string) => call<ClearAgentResult>('swarm:clearAgent', { id, runId }),
   authorizeSpawn: (conversationId: string) => call<{ ok: boolean; authorized: boolean }>('agents:authorizeSpawn', { conversationId }),
   hasSpawnAuthorization: (conversationId: string) => call<{ ok: boolean; authorized: boolean }>('agents:hasSpawnAuthorization', { conversationId }),
+  startOrchestratorRun: (sessionId: string, objective: string, stages: string[]) =>
+    call<import('../main/orchestrator/types.js').OrchestratorRun>('orchestrator:start', { sessionId, objective, stages }),
 
   onStateChanged: (listener: (state: AppState) => void): (() => void) => {
     const wrapped = (_event: unknown, state: AppState): void => listener(state);
