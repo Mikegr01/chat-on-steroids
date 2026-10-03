@@ -13,4 +13,13 @@ describe('Phase 3 live ORCH wiring', () => {
     expect(preload).toContain('startOrchestratorRun:');
     expect(ipc).toContain("handle('orchestrator:start'");
   });
+
+  it('keeps a new-chat ORCH start pending until the accepted input has a real session binding', async () => {
+    const chat = await readFile('src/renderer/chat.ts', 'utf8');
+
+    expect(chat).toContain('pendingOrchestratorStarts');
+    expect(chat).toContain('startPendingOrchestrator(entry)');
+    expect(chat).toContain('await startPendingOrchestrator(result)');
+    expect(chat).not.toContain('ORCH could not start because the ChatGPT conversation was not bound yet.');
+  });
 });

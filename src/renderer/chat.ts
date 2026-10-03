@@ -214,6 +214,43 @@ function rememberDraft(): void {
 }
 let skillPicker: ReturnType<typeof initSkills> | undefined;
 let orchEnabled = false;
+type PendingOrchestratorStart = {
+  sessionId: string | null;
+  objective: string;
+  stages: string[];
+};
+const pendingOrchestratorStarts = new Map<string, PendingOrchestratorStart>();
+
+function paintOrchestratorStarted(): void {
+  const statusRow = document.getElementById('orchStatus');
+  if (!statusRow) return;
+  statusRow.hidden = false;
+  statusRow.replaceChildren(
+    el('span', 'orch-status-text', () => t("ORCH Active · Worker/verifier execution started"))
+  );
+}
+
+async function startPendingOrchestrator(entry: InputEntry): Promise<boolean> {
+  const pending = pendingOrchestratorStarts.get(entry.id);
+  if (!pending) return false;
+  if (['failed', 'cancelled'].includes(entry.state) && !entry.deliveredSessionId) {
+    pendingOrchestratorStarts.delete(entry.id);
+    return false;
+  }
+  // Existing chats already have a stable session id at send time. New chats do not:
+  // wait for the native receipt to materialize deliveredSessionId before crossing IPC.
+  const sessionId = pending.sessionId ?? entry.deliveredSessionId ?? null;
+  if (!sessionId) return false;
+  pendingOrchestratorStarts.delete(entry.id);
+  const orchestratorRun = await run(api.startOrchestratorRun(
+    sessionId,
+    pending.objective,
+    pending.stages
+  ));
+  if (!orchestratorRun) return false;
+  paintOrchestratorStarted();
+  return true;
+}
 function restoreDraft(): void {
   skillPicker?.close();
   cancelGoalRequest();
@@ -4123,6 +4160,9 @@ async function refreshInputQueue(): Promise<void> {
   const [all, pausedHelpers] = await Promise.all([run(api.listInputs()), run(api.listPausedHelpers())]);
   if (!all || selection !== selectionGeneration || request !== inputQueueGeneration) return;
   pendingComposerInputs = all;
+  for (const entry of all) {
+    if (pendingOrchestratorStarts.has(entry.id)) await startPendingOrchestrator(entry);
+  }
   for (const id of dismissedInputNotices) if (!all.some(entry => entry.id === id)) dismissedInputNotices.delete(id);
   paintDeliveryControls();
   const accepted = pendingNewInput && all.find(entry => entry.id === pendingNewInput!.id);
@@ -4429,25 +4469,12 @@ async function sendComposer(delivery?: 'finish', plan?: string[], planObjective?
       await adoptAcceptedOpening(result);
     }
     if (orchestratorRequested) {
-      const orchestratorSessionId = result.sessionId ?? result.deliveredSessionId ?? sessionId ?? selectedId;
-      if (!orchestratorSessionId) {
-        toast(t("ORCH could not start because the ChatGPT conversation was not bound yet."));
-      } else {
-        const orchestratorRun = await run(api.startOrchestratorRun(
-          orchestratorSessionId,
-          planObjective ?? objective ?? text,
-          plan ?? [text]
-        ));
-        if (orchestratorRun) {
-          const statusRow = document.getElementById('orchStatus');
-          if (statusRow) {
-            statusRow.hidden = false;
-            statusRow.replaceChildren(
-              el('span', 'orch-status-text', () => t("ORCH Active · Worker/verifier execution started"))
-            );
-          }
-        }
-      }
+      pendingOrchestratorStarts.set(result.id, {
+        sessionId,
+        objective: planObjective ?? objective ?? text,
+        stages: plan ?? [text]
+      });
+      await startPendingOrchestrator(result);
     }
     $('composerStatus').textContent = '';
     void refreshInputQueue();
