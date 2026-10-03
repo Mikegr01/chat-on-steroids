@@ -79,3 +79,10 @@ export interface CreateRunInput {
   steps: StepInput[];
   projectIdentity?: ProjectIdentitySnapshot;
 }
+
+export interface FileEffectInput {
+  runId: string;
+  stepId: string;
+  generation: number;
+  effect: FileEffect;
+}

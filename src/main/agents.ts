@@ -327,6 +327,23 @@ let livenessFloor = 0;
 let spawnRequest: ((workers: WorkerSpawn[]) => void) | null = null;
 const listeners = new Set<() => void>();
 const endListeners = new Set<(reason: string, retired: RetiredChat[], runId: string) => void>();
+
+export interface CommittedWorkerReport {
+  runId: string;
+  workerId: string;
+  messageId: string;
+  result: string;
+  reportMessage: AgentMessage;
+  agentInfo: AgentInfo;
+}
+
+const workerReportListeners = new Set<(report: CommittedWorkerReport) => void>();
+const deliveredReportMessageIds = new Set<string>();
+
+export function onWorkerReportCommitted(listener: (report: CommittedWorkerReport) => void): () => void {
+  workerReportListeners.add(listener);
+  return () => workerReportListeners.delete(listener);
+}
 let persist: (() => void) | null = null;
 let persistNow: ((snapshot: SwarmSnapshot | null) => Promise<void>) | null = null;
 let criticalMutationRevision = 0;
@@ -2585,6 +2602,29 @@ function publishFinish(agent: Agent, info: AgentInfo, report: AgentMessage, dura
   recount(prime);
   logInfo(`multi-agent: ${agent.info.id} ${info.state === 'finished' ? 'finished for good' : 'is sleeping'}`);
   changed(durability);
+  if (!deliveredReportMessageIds.has(report.id)) {
+    deliveredReportMessageIds.add(report.id);
+    if (deliveredReportMessageIds.size > 1000) {
+      const oldest = deliveredReportMessageIds.keys().next().value;
+      if (oldest) deliveredReportMessageIds.delete(oldest);
+    }
+    const run = runForAgent(agent);
+    const committed: CommittedWorkerReport = {
+      runId: run?.runId ?? agent.info.runId ?? '',
+      workerId: agent.info.id,
+      messageId: report.id,
+      result: info.result ?? '',
+      reportMessage: { ...report },
+      agentInfo: { ...agent.info }
+    };
+    for (const listener of workerReportListeners) {
+      try {
+        listener(committed);
+      } catch (err) {
+        logWarn(`multi-agent: worker report listener threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
 }
 
 /** Whether this exact run object still owns its agent map, active or parked. */
@@ -4762,4 +4802,6 @@ export function resetAgentsForTests(): void {
   retiredPersistNow = null;
   listeners.clear();
   endListeners.clear();
+  workerReportListeners.clear();
+  deliveredReportMessageIds.clear();
 }

@@ -1,5 +1,6 @@
 import { readDurable, writeDurableNow } from '../durable.js';
-import type { CreateRunInput, OrchestratorRun, StepRecord } from './types.js';
+import { logWarn } from '../logger.js';
+import type { CreateRunInput, FileEffectInput, OrchestratorRun, StepRecord } from './types.js';
 
 const STATE_NAME = 'orchestrator-runs';
 interface StoredRuns { version: 1; runs: OrchestratorRun[] }
@@ -110,10 +111,18 @@ export async function createRun(input: CreateRunInput): Promise<OrchestratorRun>
 
 export async function restoreOrchestratorRuns(): Promise<void> {
   return serializeStore(async () => {
-    const stored = await readDurable<StoredRuns>(STATE_NAME);
-    runs.clear();
-    if (!stored || stored.version !== 1 || !Array.isArray(stored.runs)) return;
-    for (const run of stored.runs) runs.set(run.id, copy(run));
+    try {
+      const stored = await readDurable<StoredRuns>(STATE_NAME);
+      runs.clear();
+      if (!stored || stored.version !== 1 || !Array.isArray(stored.runs)) return;
+      for (const run of stored.runs) {
+        if (!run || typeof run !== 'object' || typeof run.id !== 'string') continue;
+        runs.set(run.id, copy(run));
+      }
+    } catch (err) {
+      runs.clear();
+      logWarn(`orchestrator: failed to restore runs: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
 }
 
@@ -223,6 +232,16 @@ export async function prepareRepair(runId: string, stepId: string, workerId: str
     step.status = 'ACTIVE';
     run.status = 'WAITING_WORKER';
     delete run.blockerReason;
+  });
+}
+
+export async function recordFileEffect(input: FileEffectInput): Promise<OrchestratorRun> {
+  return mutate(input.runId, run => {
+    if (terminal(run)) fail('RUN_TERMINAL');
+    const step = assertStep(run, input.stepId);
+    if (input.generation !== step.generation) fail('STALE_GENERATION');
+    if (step.status !== 'ACTIVE' && step.status !== 'VERIFYING') fail('STEP_NOT_ACTIVE');
+    step.fileEffects.push(copy(input.effect));
   });
 }
 

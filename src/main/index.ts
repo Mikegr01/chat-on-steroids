@@ -68,6 +68,7 @@ import {
   setContinuationRecoveryHooks,
   type ContinuationSnapshot
 } from './session/continuation.js';
+import { restoreOrchestratorRuns } from './orchestrator/conductor.js';
 import { runShutdownSequence } from './shutdown.js';
 import { applyStagedUpdate } from './update.js';
 import { configureAppIdentity } from './app-identity.js';
@@ -440,6 +441,12 @@ void app.whenReady().then(async () => {
   await restoreContinuations(savedContinuations);
   if (windowActivation.isDisabled()) return;
   await reconcileAgentRequestOwners();
+  if (windowActivation.isDisabled()) return;
+  try {
+    await restoreOrchestratorRuns();
+  } catch (err) {
+    logWarn(`startup: orchestrator restore failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (windowActivation.isDisabled()) return;
 
   // Strict CSP for our own page. There is no remote content and no inline script.
