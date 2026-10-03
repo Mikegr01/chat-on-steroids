@@ -41,6 +41,18 @@ function snapshot(replacement?: OrchestratorRun): StoredRuns {
   return { version: 1, runs: values };
 }
 
+async function persistSnapshot(replacement: OrchestratorRun): Promise<void> {
+  try {
+    await writeDurableNow(STATE_NAME, snapshot(replacement));
+  } catch (error) {
+    // writeDurableNow retains a failed generation for retry. The staged run has not
+    // been published to the in-memory map, so supersede that retry with the
+    // authoritative snapshot before returning the failed transition to the caller.
+    await writeDurableNow(STATE_NAME, snapshot()).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function serializeStore<T>(operation: () => Promise<T>): Promise<T> {
   const previous = storeQueue;
   let release!: () => void;
@@ -63,7 +75,7 @@ async function mutate(runId: string, change: (draft: OrchestratorRun) => void): 
     const draft = copy(existing);
     change(draft);
     draft.updatedAt = Date.now();
-    await writeDurableNow(STATE_NAME, snapshot(draft));
+    await persistSnapshot(draft);
     runs.set(runId, draft);
     return copy(draft);
   });
@@ -90,7 +102,7 @@ export async function createRun(input: CreateRunInput): Promise<OrchestratorRun>
       lastCheckpointAt: now,
       ...(input.projectIdentity ? { projectIdentity: copy(input.projectIdentity) } : {})
     };
-    await writeDurableNow(STATE_NAME, snapshot(run));
+    await persistSnapshot(run);
     runs.set(run.id, run);
     return copy(run);
   });
@@ -154,7 +166,7 @@ export async function recordWorkerResult(input: WorkerResultInput): Promise<{ ru
     step.status = 'VERIFYING';
     draft.status = 'VERIFYING';
     draft.updatedAt = Date.now();
-    await writeDurableNow(STATE_NAME, snapshot(draft));
+    await persistSnapshot(draft);
     runs.set(input.runId, draft);
     return { run: copy(draft), alreadyAccepted: false };
   });

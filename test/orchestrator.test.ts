@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { initDurableStore, resetDurableForTests } from '../src/main/durable.js';
+import { flushDurable, initDurableStore, resetDurableForTests } from '../src/main/durable.js';
 import { makeTempDir, removeTempDir } from './helpers.js';
 import {
   assignWorker,
@@ -217,6 +217,35 @@ describe('orchestrator conductor', () => {
       await restoreOrchestratorRuns();
       expect(getRun('run-fail')).toBeUndefined();
       expect(getRun('run-ok')).toBeDefined();
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('rejected durable commit cannot resurrect from the retry queue', async () => {
+    const { promises: nodeFs } = await import('node:fs');
+    const realRename = nodeFs.rename.bind(nodeFs);
+    let failNextRename = true;
+    const { vi } = await import('vitest');
+    const renameSpy = vi.spyOn(nodeFs, 'rename').mockImplementation(async (...args) => {
+      if (failNextRename && String(args[1]).includes('orchestrator-runs')) {
+        failNextRename = false;
+        throw new Error('disk failure simulation');
+      }
+      return realRename(...args);
+    });
+
+    try {
+      await expect(
+        createRun({ id: 'run-rejected', ownerConversationId: 'c1', projectId: 'p1', objective: 'Rejected', steps })
+      ).rejects.toThrow('disk failure simulation');
+      expect(getRun('run-rejected')).toBeUndefined();
+
+      await flushDurable();
+      resetOrchestratorForTests();
+      await restoreOrchestratorRuns();
+
+      expect(getRun('run-rejected')).toBeUndefined();
     } finally {
       renameSpy.mockRestore();
     }
