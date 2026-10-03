@@ -65,6 +65,7 @@ import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, r
 import { forgetExposedSurface } from './mcp/server.js';
 import { runDiagnostics } from './diagnostics.js';
 import { getOrchestratorRuntimeDriver, stagesToStepInputs } from './orchestrator/driver.js';
+import { latestRunForOwnerConversation, onOrchestratorRunChange } from './orchestrator/conductor.js';
 import { getSystemHealthSnapshot, runSystemHealthCheck, generateSanitizedDiagnosticsReport } from './system-diagnostics.js';
 import { resolveCustomUserData } from './app-identity.js';
 import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, onLog } from './logger.js';
@@ -1337,6 +1338,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     return run;
   });
 
+  handle('orchestrator:getForSession', async (payload) => {
+    const { sessionId } = z.object({
+      sessionId: z.string().min(8).max(64).regex(/^[0-9a-z-]+$/i)
+    }).parse(payload);
+    const session = await getSession(sessionId);
+    if (!session?.conversationId) return null;
+    return latestRunForOwnerConversation(session.conversationId) ?? null;
+  });
+
 
   // Push updates so the UI reflects tunnel progress without polling. buildState() crosses
   // async secret/bridge reads, so an older snapshot can otherwise resolve after a newer one and
@@ -1445,4 +1455,5 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   onLog((entry) => push('log:entry', entry));
   onSessionChange(() => push('session:changed'));
   onSwarmChange(() => push('swarm:changed', swarmState()));
+  onOrchestratorRunChange((run) => push('orchestrator:changed', run));
 }

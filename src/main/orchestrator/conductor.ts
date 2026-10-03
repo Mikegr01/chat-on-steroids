@@ -6,6 +6,7 @@ const STATE_NAME = 'orchestrator-runs';
 interface StoredRuns { version: 1; runs: OrchestratorRun[] }
 
 const runs = new Map<string, OrchestratorRun>();
+const runListeners = new Set<(run: OrchestratorRun) => void>();
 let storeQueue: Promise<void> = Promise.resolve();
 
 function copy<T>(value: T): T {
@@ -40,6 +41,16 @@ function snapshot(replacement?: OrchestratorRun): StoredRuns {
     else values.push(copy(replacement));
   }
   return { version: 1, runs: values };
+}
+
+function publishRun(run: OrchestratorRun): void {
+  for (const listener of runListeners) {
+    try {
+      listener(copy(run));
+    } catch (error) {
+      logWarn(`orchestrator: run listener failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 async function persistSnapshot(replacement: OrchestratorRun): Promise<void> {
@@ -78,6 +89,7 @@ async function mutate(runId: string, change: (draft: OrchestratorRun) => void): 
     draft.updatedAt = Date.now();
     await persistSnapshot(draft);
     runs.set(runId, draft);
+    publishRun(draft);
     return copy(draft);
   });
 }
@@ -105,6 +117,7 @@ export async function createRun(input: CreateRunInput): Promise<OrchestratorRun>
     };
     await persistSnapshot(run);
     runs.set(run.id, run);
+    publishRun(run);
     return copy(run);
   });
 }
@@ -129,6 +142,24 @@ export async function restoreOrchestratorRuns(): Promise<void> {
 export function getRun(runId: string): OrchestratorRun | undefined {
   const run = runs.get(runId);
   return run ? copy(run) : undefined;
+}
+
+export function listOrchestratorRuns(): OrchestratorRun[] {
+  return [...runs.values()].map(copy);
+}
+
+export function latestRunForOwnerConversation(ownerConversationId: string): OrchestratorRun | undefined {
+  let latest: OrchestratorRun | undefined;
+  for (const run of runs.values()) {
+    if (run.ownerConversationId !== ownerConversationId) continue;
+    if (!latest || run.startedAt >= latest.startedAt) latest = run;
+  }
+  return latest ? copy(latest) : undefined;
+}
+
+export function onOrchestratorRunChange(listener: (run: OrchestratorRun) => void): () => void {
+  runListeners.add(listener);
+  return () => runListeners.delete(listener);
 }
 
 export async function assignWorker(runId: string, stepId: string, workerId: string): Promise<OrchestratorRun> {
@@ -255,5 +286,6 @@ export async function cancelRun(runId: string): Promise<OrchestratorRun> {
 
 export function resetOrchestratorForTests(): void {
   runs.clear();
+  runListeners.clear();
   storeQueue = Promise.resolve();
 }

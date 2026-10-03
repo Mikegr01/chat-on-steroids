@@ -6,6 +6,8 @@ import {
   cancelRun,
   createRun,
   getRun,
+  latestRunForOwnerConversation,
+  onOrchestratorRunChange,
   prepareRepair,
   recordVerification,
   recordWorkerResult,
@@ -36,6 +38,30 @@ async function run() {
 }
 
 describe('orchestrator conductor', () => {
+  it('publishes only durable run transitions and resolves the latest run for an owner conversation', async () => {
+    const observed: string[] = [];
+    const unsubscribe = onOrchestratorRunChange((value) => observed.push(value.status));
+    try {
+      const first = await run();
+      await createRun({
+        id: 'run-2',
+        ownerConversationId: 'c1',
+        projectId: 'p1',
+        objective: 'Second run',
+        steps
+      });
+      expect(first.status).toBe('RUNNING');
+      expect(observed).toEqual(['RUNNING', 'RUNNING']);
+      expect(latestRunForOwnerConversation('c1')?.id).toBe('run-2');
+
+      await assignWorker('run-2', 's1', 'worker-2');
+      expect(observed.at(-1)).toBe('WAITING_WORKER');
+      expect(latestRunForOwnerConversation('c1')?.status).toBe('WAITING_WORKER');
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('persists creation and restores the exact current run without replaying work', async () => {
     const created = await run();
     expect(created.currentStepIndex).toBe(0);

@@ -545,6 +545,57 @@ describe('ORCHESTRATOR_V2_PHASE3: Required Scenarios', () => {
     expect(restored?.steps[0]?.status).toBe('VERIFYING');
   });
 
+  it('12b. RESTORE: a durable VERIFYING step without a verifier dispatches exactly one verifier and never replays mutation work', async () => {
+    const requestedBootstraps: unknown[] = [];
+    const unsubscribe = onSpawnRequest((workers) => {
+      requestedBootstraps.push(...workers);
+    });
+    onSwarmPersistNow(async () => undefined);
+    try {
+      const run = await driver.createRun({
+        id: 'run-restore-missing-verifier',
+        ownerConversationId: 'prime-restore-missing-verifier',
+        projectId: 'proj-1',
+        objective: 'Restore verifier safely',
+        steps: [{ id: 's1', title: 'Step 1', instructions: 'Step 1', acceptanceCriteria: [] }]
+      });
+      await driver.assignCurrentStepWorker(run.id, 'worker-1', { spawnAgent: true, primeModel: 'gpt-5.6' });
+      await driver.handleCommittedWorkerReport(
+        run.id,
+        mockWorkerReport('worker-1', 'm1', 'Done', run.id, 's1', 'worker')
+      );
+      expect(driver.getRun(run.id)?.status).toBe('VERIFYING');
+      expect(swarmState().agents.some(agent => agent.executionRole === 'verifier')).toBe(false);
+
+      driver.dispose();
+      resetOrchestratorForTests();
+      await restoreOrchestratorRuns();
+      driver = createOrchestratorDriver();
+
+      const activeIds = new Set(
+        swarmState().agents
+          .filter(agent => ['invited', 'active', 'detached', 'waking'].includes(agent.state))
+          .map(agent => agent.id)
+      );
+      const first = await driver.reconcileOnStartup(activeIds);
+      expect(first.rerunMutationWorkers).toEqual([]);
+      expect(first.spawnedWorkers).toHaveLength(1);
+      const verifier = swarmState().agents.find(agent =>
+        agent.executionRole === 'verifier' && agent.orchestratorRunId === run.id
+      );
+      expect(verifier).toBeDefined();
+
+      const bootstrapCount = requestedBootstraps.length;
+      const second = await driver.reconcileOnStartup(new Set([...activeIds, verifier!.id]));
+      expect(second.spawnedWorkers).toEqual([]);
+      expect(second.rerunMutationWorkers).toEqual([]);
+      expect(requestedBootstraps).toHaveLength(bootstrapCount);
+    } finally {
+      onSwarmPersistNow(null);
+      unsubscribe();
+    }
+  });
+
   // 13. GOAL WITHOUT ORCH
   // Goal ON, ORCH OFF -> legacy Goal behavior, zero Orchestrator workers
   it('13. GOAL WITHOUT ORCH: Goal behaves as legacy when ORCH is OFF with zero Orchestrator workers', async () => {
@@ -692,6 +743,103 @@ describe('ORCHESTRATOR_V2_PHASE3: Required Scenarios', () => {
       expect(durableWrites).toBeGreaterThan(0);
     } finally {
       onSwarmPersistNow(null);
+    }
+  });
+
+  it('16c. REAL AGENTS DURABILITY: rolls back a staged worker when immediate persistence throws', async () => {
+    const requestedBootstraps: unknown[] = [];
+    const unsubscribe = onSpawnRequest((workers) => {
+      requestedBootstraps.push(...workers);
+    });
+    onSwarmPersistNow(async () => {
+      throw new Error('durable worker write failed');
+    });
+    const run = await driver.createRun({
+      id: 'run-real-agents-worker-failure',
+      ownerConversationId: 'conv-real-worker-failure',
+      projectId: 'proj-1',
+      objective: 'Reject phantom worker',
+      steps: [{ id: 'step-real-1', title: 'Step 1', instructions: 'Inspect safely', acceptanceCriteria: [] }]
+    });
+    try {
+      await expect(
+        driver.assignCurrentStepWorker(run.id, 'worker-1', { spawnAgent: true, primeModel: 'gpt-5.6' })
+      ).rejects.toThrow(/durable worker write failed/);
+      expect(swarmState().agents.some(agent => agent.origin === 'ORCHESTRATOR')).toBe(false);
+      expect(requestedBootstraps).toHaveLength(0);
+      expect(driver.getRun(run.id)?.status).toBe('RUNNING');
+    } finally {
+      onSwarmPersistNow(null);
+      unsubscribe();
+    }
+  });
+
+  it('16d. REAL AGENTS DURABILITY: rolls back a staged verifier when immediate persistence throws', async () => {
+    const requestedBootstraps: unknown[] = [];
+    const unsubscribe = onSpawnRequest((workers) => {
+      requestedBootstraps.push(...workers);
+    });
+    const run = await driver.createRun({
+      id: 'run-real-agents-verifier-failure',
+      ownerConversationId: 'conv-real-verifier-failure',
+      projectId: 'proj-1',
+      objective: 'Reject phantom verifier',
+      steps: [{ id: 'step-real-1', title: 'Step 1', instructions: 'Inspect safely', acceptanceCriteria: [] }]
+    });
+    await driver.assignCurrentStepWorker(run.id, 'worker-1');
+    await driver.handleCommittedWorkerReport(
+      run.id,
+      mockWorkerReport('worker-1', 'msg-1', 'Worker completed', run.id, 'step-real-1', 'worker')
+    );
+    onSwarmPersistNow(async () => {
+      throw new Error('durable verifier write failed');
+    });
+    try {
+      await expect(
+        driver.dispatchVerifier(run.id, 'verifier-1', { spawnAgent: true, primeModel: 'gpt-5.6' })
+      ).rejects.toThrow(/durable verifier write failed/);
+      expect(swarmState().agents.some(agent => agent.executionRole === 'verifier')).toBe(false);
+      expect(requestedBootstraps).toHaveLength(0);
+      expect(driver.getRun(run.id)?.status).toBe('VERIFYING');
+    } finally {
+      onSwarmPersistNow(null);
+      unsubscribe();
+    }
+  });
+
+  it('16e. REAL AGENTS DURABILITY: repair workers cross the same persistence barrier before publication', async () => {
+    const requestedBootstraps: unknown[] = [];
+    const unsubscribe = onSpawnRequest((workers) => {
+      requestedBootstraps.push(...workers);
+    });
+    const run = await driver.createRun({
+      id: 'run-real-agents-repair-failure',
+      ownerConversationId: 'conv-real-repair-failure',
+      projectId: 'proj-1',
+      objective: 'Reject phantom repair worker',
+      steps: [{ id: 'step-real-1', title: 'Step 1', instructions: 'Inspect safely', acceptanceCriteria: [] }]
+    });
+    await driver.assignCurrentStepWorker(run.id, 'worker-1');
+    await driver.handleCommittedWorkerReport(
+      run.id,
+      mockWorkerReport('worker-1', 'msg-1', 'Worker completed', run.id, 'step-real-1', 'worker')
+    );
+    await driver.dispatchVerifier(run.id, 'verifier-1');
+    await driver.handleVerifierReport(run.id, 'verifier-1', 'VERDICT: DEFECT - repair required');
+    onSwarmPersistNow(async () => {
+      throw new Error('durable repair write failed');
+    });
+    try {
+      await expect(
+        driver.prepareRepair(run.id, 'worker-repair-1', { spawnAgent: true, primeModel: 'gpt-5.6' })
+      ).rejects.toThrow(/durable repair write failed/);
+      expect(swarmState().agents.some(agent => agent.executionRole === 'repair_worker')).toBe(false);
+      expect(requestedBootstraps).toHaveLength(0);
+      expect(driver.getRun(run.id)?.status).toBe('BLOCKED');
+      expect(driver.getAssignedWorkerSpec(run.id, 'worker-repair-1')).toBeUndefined();
+    } finally {
+      onSwarmPersistNow(null);
+      unsubscribe();
     }
   });
 

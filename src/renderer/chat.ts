@@ -34,6 +34,8 @@ import { injectableAttachments, queuedFollowup, MAX_INPUT_IMAGES } from '../shar
 import type { InputArgs, InputEntry } from '../main/session/input.js';
 import type { LocalProject } from '../shared/projects.js';
 import type { TaskProgress } from '../shared/task-progress.js';
+import type { OrchestratorRun } from '../main/orchestrator/types.js';
+import { orchestratorPresentation } from './orchestrator-ui.js';
 /**
  * Desktop chat workspace: recorded prose/tool truth, exact-session controls and a composer.
  * The extension remains the ChatGPT transport; main owns permissions, delivery, Goal and
@@ -214,6 +216,7 @@ function rememberDraft(): void {
 }
 let skillPicker: ReturnType<typeof initSkills> | undefined;
 let orchEnabled = false;
+let orchestratorRun: OrchestratorRun | null = null;
 type PendingOrchestratorStart = {
   sessionId: string | null;
   objective: string;
@@ -221,13 +224,35 @@ type PendingOrchestratorStart = {
 };
 const pendingOrchestratorStarts = new Map<string, PendingOrchestratorStart>();
 
-function paintOrchestratorStarted(): void {
+function paintOrch(): void {
+  const toggle = document.getElementById('orchToggle');
+  const switchEl = document.getElementById('orchSwitch') as HTMLInputElement | null;
   const statusRow = document.getElementById('orchStatus');
+  const presentation = orchestratorPresentation(orchEnabled, orchestratorRun);
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', String(orchEnabled));
+    toggle.classList.toggle('is-active', orchEnabled);
+    const label = toggle.querySelector<HTMLElement>('[data-orch-label]');
+    if (label) label.textContent = presentation.chipLabel;
+  }
+  if (switchEl) {
+    switchEl.checked = orchEnabled;
+    switchEl.setAttribute('aria-checked', String(orchEnabled));
+  }
   if (!statusRow) return;
-  statusRow.hidden = false;
-  statusRow.replaceChildren(
-    el('span', 'orch-status-text', () => t("ORCH Active · Worker/verifier execution started"))
-  );
+  statusRow.dataset.state = presentation.state;
+  statusRow.hidden = presentation.statusText === null;
+  statusRow.replaceChildren();
+  if (presentation.statusText) {
+    statusRow.append(el('span', 'orch-status-text', presentation.statusText));
+  }
+}
+
+async function refreshOrchestratorRun(sessionId: string, generation: number): Promise<void> {
+  const value = await run(api.getOrchestratorRunForSession(sessionId));
+  if (selectedId !== sessionId || selectionGeneration !== generation) return;
+  orchestratorRun = value;
+  paintOrch();
 }
 
 async function startPendingOrchestrator(entry: InputEntry): Promise<boolean> {
@@ -242,13 +267,14 @@ async function startPendingOrchestrator(entry: InputEntry): Promise<boolean> {
   const sessionId = pending.sessionId ?? entry.deliveredSessionId ?? null;
   if (!sessionId) return false;
   pendingOrchestratorStarts.delete(entry.id);
-  const orchestratorRun = await run(api.startOrchestratorRun(
+  const startedRun = await run(api.startOrchestratorRun(
     sessionId,
     pending.objective,
     pending.stages
   ));
-  if (!orchestratorRun) return false;
-  paintOrchestratorStarted();
+  if (!startedRun) return false;
+  orchestratorRun = startedRun;
+  paintOrch();
   return true;
 }
 function restoreDraft(): void {
@@ -4525,6 +4551,7 @@ function selectSession(id: string): void {
   if (selectedProjectId) expandedProjects.add(selectedProjectId);
   ui($<HTMLTextAreaElement>('chatInput'), 'placeholder', () => t("Ask anything…"));
   restoreDraft();
+  void refreshOrchestratorRun(id, selectionGeneration);
   if (ownerChanged) {
     // Retire the prior owner now; retain only its inert painted transcript until the
     // selected detail arrives. Existing async image/load generation fences still apply.
@@ -4556,6 +4583,8 @@ function selectNewChat(projectId: string | null = null): void {
   newChatSelected = true; selectedId = null; selectedProjectId = projectId; detailFor = null; detailCursor = null;
   if (projectId) expandedProjects.add(projectId);
   applyComposerSessionModel(null, null);
+  orchestratorRun = null;
+  paintOrch();
   // New Chat selects its existing draft, just like a session. Navigation is not
   // permission to discard authored text, attachments or a prepared workflow.
   $('inputQueue').replaceChildren();
@@ -4608,6 +4637,12 @@ export function initChat(next: Deps): void {
     paintLoopDelivery();
     const config = deps.state()?.config;
     if (config) paintContextMeter(sessions.find(session => session.id === selectedId) ?? null, config, confirmedComposerModel());
+  });
+  api.onOrchestratorChanged((updatedRun) => {
+    const selected = sessions.find(session => session.id === selectedId);
+    if (!selected?.conversationId || selected.conversationId !== updatedRun.ownerConversationId) return;
+    orchestratorRun = updatedRun;
+    paintOrch();
   });
   $('queueAtFinish').addEventListener('click', () => {
     if ($('queueAtFinish').hidden) return;
@@ -4938,30 +4973,6 @@ export function initChat(next: Deps): void {
     if (taskPlans.has(draftKey())) cancelTaskPlan();
     else { taskPlans.set(draftKey(), { text: '', requestId: null, stages: null, sending: false, progress: null, error: null }); paintTaskPlan(); $('chatInput').focus(); }
   });
-
-  function paintOrch(): void {
-    const toggle = document.getElementById('orchToggle');
-    const switchEl = document.getElementById('orchSwitch') as HTMLInputElement | null;
-    const statusRow = document.getElementById('orchStatus');
-    if (toggle) {
-      toggle.setAttribute('aria-pressed', String(orchEnabled));
-      toggle.classList.toggle('is-active', orchEnabled);
-    }
-    if (switchEl) {
-      switchEl.checked = orchEnabled;
-    }
-    if (statusRow) {
-      if (orchEnabled) {
-        statusRow.hidden = false;
-        statusRow.replaceChildren(
-          el('span', 'orch-status-text', () => t("ORCH Active · Bounded sequential worker/verifier execution"))
-        );
-      } else {
-        statusRow.hidden = true;
-        statusRow.replaceChildren();
-      }
-    }
-  }
 
   $('orchToggle')?.addEventListener('click', () => {
     orchEnabled = !orchEnabled;

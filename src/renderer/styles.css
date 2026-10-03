@@ -2578,6 +2578,7 @@ input[readonly] {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: min(220px, 38vw);
   padding: 4px 8px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid var(--line);
@@ -2587,6 +2588,7 @@ input[readonly] {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
 }
 
 .orch-toggle:hover {
@@ -2600,26 +2602,64 @@ input[readonly] {
   color: var(--blue);
 }
 
-.orch-popover-row {
-  padding: 8px 12px;
+.composer-popover-section-label {
+  padding: 4px 10px 6px;
+  color: var(--faint);
+  font-size: calc(10px * var(--text-scale, 1));
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.orch-execution-label {
+  margin-top: 6px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
-  margin-top: 4px;
+}
+
+.orch-popover-row {
+  padding: 2px 10px 8px;
 }
 
 .orch-popover-label {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 14px;
+  min-width: 0;
   cursor: pointer;
+}
+
+.orch-popover-label .mode-copy {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.orch-popover-label .mode-copy > span {
+  display: block;
+  font-weight: 550;
+}
+
+.orch-popover-label small {
+  display: block;
+  margin-top: 4px;
+  color: var(--soft);
+  font-size: calc(11px * var(--text-scale, 1));
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.orch-popover-label .orch-switch {
+  margin-left: 0;
 }
 
 .orch-status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
-  margin: 4px 0;
+  padding: 5px 10px;
+  margin: 2px 0;
   background: var(--wash);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm, 6px);

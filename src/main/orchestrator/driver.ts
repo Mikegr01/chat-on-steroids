@@ -1,6 +1,7 @@
 import {
   createRun,
   getRun,
+  listOrchestratorRuns,
   assignWorker,
   recordWorkerResult,
   recordVerification,
@@ -20,6 +21,7 @@ import {
   persistCriticalSwarmNow,
   stageSpawn,
   requestWorkerBootstraps,
+  swarmState,
   type CommittedWorkerReport
 } from '../agents.js';
 import { getChatModels } from '../chat-models.js';
@@ -248,6 +250,19 @@ export function createOrchestratorDriver(): OrchestratorDriver {
     return step;
   }
 
+  async function persistCommitAndPublishSpawn(staged: ReturnType<typeof stageSpawn>): Promise<void> {
+    try {
+      if (!(await persistCriticalSwarmNow())) {
+        throw new Error('ORCHESTRATOR_DURABILITY_UNAVAILABLE');
+      }
+    } catch (error) {
+      staged.rollback();
+      throw error;
+    }
+    staged.commit();
+    requestWorkerBootstraps(staged.created.map((agent) => agent.id), staged.runId);
+  }
+
   async function createRunImpl(input: CreateRunInput): Promise<OrchestratorRun> {
     return createRun(input);
   }
@@ -297,13 +312,8 @@ export function createOrchestratorDriver(): OrchestratorDriver {
         orchestratorStepId: step.id,
         executionRole: 'worker'
       });
-      if (!(await persistCriticalSwarmNow())) {
-        staged.rollback();
-        throw new Error('ORCHESTRATOR_DURABILITY_UNAVAILABLE');
-      }
-      staged.commit();
+      await persistCommitAndPublishSpawn(staged);
       assignedId = staged.created[0]?.id ?? assignedId;
-      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
     }
 
     const workerSpec: AssignedWorkerSpec = {
@@ -390,13 +400,8 @@ export function createOrchestratorDriver(): OrchestratorDriver {
         orchestratorStepId: step.id,
         executionRole: 'verifier'
       });
-      if (!(await persistCriticalSwarmNow())) {
-        staged.rollback();
-        throw new Error('ORCHESTRATOR_DURABILITY_UNAVAILABLE');
-      }
-      staged.commit();
+      await persistCommitAndPublishSpawn(staged);
       actualVerifierId = staged.created[0]?.id ?? verifierId;
-      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
     }
 
     const spec: VerifierTaskSpec = {
@@ -514,8 +519,6 @@ export function createOrchestratorDriver(): OrchestratorDriver {
       orchestratorRunId: runId,
       orchestratorStepId: step.id
     };
-    assignedWorkerSpecs.set(`${runId}:${repairId}`, repairSpec);
-
     if (options?.spawnAgent && getConfig().multiAgent.enabled) {
       const staged = stageSpawn({
         workers: [{
@@ -529,10 +532,10 @@ export function createOrchestratorDriver(): OrchestratorDriver {
         orchestratorStepId: step.id,
         executionRole: 'repair_worker'
       });
-      staged.commit();
-      requestWorkerBootstraps(staged.created.map((a) => a.id), staged.runId);
+      await persistCommitAndPublishSpawn(staged);
     }
 
+    assignedWorkerSpecs.set(`${runId}:${repairId}`, repairSpec);
     return prepareRepair(runId, step.id, repairId);
   }
 
@@ -551,17 +554,58 @@ export function createOrchestratorDriver(): OrchestratorDriver {
   }
 
   async function reconcileOnStartupImpl(activeWorkerIds: Set<string> = new Set()): Promise<StartupReconciliationResult> {
-    // Reconcile non-terminal runs after restore
-    // Invariant: Never rerun mutation workers blindly
-    // Invariant: Never spawn duplicate workers if already active
     const spawnedWorkers: string[] = [];
     const rerunMutationWorkers: string[] = [];
+    const agents = swarmState().agents;
 
-    // All active runs are inspected from conductor
-    // Conductor status is preserved
-    // If a worker is in activeWorkerIds, it is not re-spawned
-    if (activeWorkerIds.size > 0) {
-      // active workers identified
+    for (const run of listOrchestratorRuns()) {
+      if (run.status === 'COMPLETED' || run.status === 'CANCELED' || run.status === 'BLOCKED') continue;
+      const step = currentStep(run);
+
+      if (run.status === 'WAITING_WORKER') {
+        const assignedId = step.assignedWorkerId;
+        const matchingWorker = agents.find(agent =>
+          agent.origin === 'ORCHESTRATOR'
+          && agent.orchestratorRunId === run.id
+          && agent.orchestratorStepId === step.id
+          && (agent.executionRole === 'worker' || agent.executionRole === 'repair_worker')
+        );
+        // A durable WAITING_WORKER assignment is mutation authority. If its real worker is
+        // missing, the state is ambiguous: never manufacture a second mutation worker.
+        if (!matchingWorker && assignedId && !activeWorkerIds.has(assignedId)) {
+          logWarn(`orchestrator: restored ${run.id} is waiting for ${assignedId}, but no matching durable Agents worker exists; mutation replay withheld`);
+        }
+        continue;
+      }
+
+      if (run.status !== 'VERIFYING') continue;
+
+      const existingVerifier = agents.find(agent =>
+        agent.origin === 'ORCHESTRATOR'
+        && agent.orchestratorRunId === run.id
+        && agent.orchestratorStepId === step.id
+        && agent.executionRole === 'verifier'
+      );
+      if (existingVerifier) {
+        activeVerifiers.set(run.id, existingVerifier.id);
+        continue;
+      }
+
+      // VERIFYING means the worker result crossed the conductor durability barrier already.
+      // Dispatching the missing read-only verifier cannot replay mutation work.
+      if (!getConfig().multiAgent.enabled) continue;
+      try {
+        const verifier = await dispatchVerifierImpl(
+          run.id,
+          `verifier-${step.index + 1}-g${step.generation}`,
+          { primeModel: primeModels.get(run.id), spawnAgent: true }
+        );
+        spawnedWorkers.push(verifier.verifierId);
+      } catch (error) {
+        // Recovery is allowed to abstain, never to weaken the durability barrier. The run
+        // remains VERIFYING and can be reconciled again once persistence/runtime is available.
+        logWarn(`orchestrator: verifier recovery for ${run.id} deferred: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     return { spawnedWorkers, rerunMutationWorkers };
   }

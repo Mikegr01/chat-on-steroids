@@ -24,6 +24,8 @@ describe('Orchestrator Phase 3 UI & Model Policy', () => {
     expect(workerPolicy).not.toBeNull();
     const wpOptions = Array.from(workerPolicy!.options).map(opt => opt.value);
     expect(wpOptions).toEqual(['off', 'ask', 'auto']);
+    expect(Array.from(workerPolicy!.options).map(opt => opt.textContent)).toEqual(['Disabled', 'Ask permission', 'Auto']);
+    expect(workerPolicy!.closest('.setting')?.textContent).toContain('Orchestrator remains independent');
 
     // Worker Model Policy & Specific Model Row
     const workerModelPolicy = doc.getElementById('workerModelPolicy') as HTMLSelectElement | null;
@@ -40,6 +42,7 @@ describe('Orchestrator Phase 3 UI & Model Policy', () => {
     expect(verifierModelPolicy).not.toBeNull();
     const vmpOptions = Array.from(verifierModelPolicy!.options).map(opt => opt.value);
     expect(vmpOptions).toEqual(['auto', 'inherit_prime', 'specific_model']);
+    expect(Array.from(verifierModelPolicy!.options).map(opt => opt.textContent)).toEqual(['Auto', 'Inherit Prime', 'Specific model']);
 
     const verifierSpecificModelRow = doc.getElementById('verifierSpecificModelRow');
     expect(verifierSpecificModelRow).not.toBeNull();
@@ -47,8 +50,14 @@ describe('Orchestrator Phase 3 UI & Model Policy', () => {
 
     // Independent ORCH controls
     expect(doc.getElementById('orchToggle')).not.toBeNull();
-    expect(doc.getElementById('orchSwitch')).not.toBeNull();
+    const orchSwitch = doc.getElementById('orchSwitch');
+    expect(orchSwitch).not.toBeNull();
+    expect(orchSwitch?.getAttribute('role')).toBe('switch');
+    expect(orchSwitch?.closest('.sw')).not.toBeNull();
     expect(doc.getElementById('orchStatus')).not.toBeNull();
+    const sectionLabels = Array.from(doc.querySelectorAll('.composer-popover-section-label')).map(node => node.textContent?.trim());
+    expect(sectionLabels).toEqual(['Mode', 'Execution']);
+    expect(doc.querySelector('#orchToggle [data-orch-label]')).not.toBeNull();
   });
 
   it('populates worker and verifier specific model selects from live catalog and flags unavailable models', async () => {

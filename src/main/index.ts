@@ -43,6 +43,7 @@ import {
   restoreSwarm,
   snapshotRetiredWorkers,
   snapshotSwarm,
+  swarmState,
   type RetiredWorkersSnapshot,
   type SwarmSnapshot
 } from './agents.js';
@@ -69,6 +70,7 @@ import {
   type ContinuationSnapshot
 } from './session/continuation.js';
 import { restoreOrchestratorRuns } from './orchestrator/conductor.js';
+import { getOrchestratorRuntimeDriver } from './orchestrator/driver.js';
 import { runShutdownSequence } from './shutdown.js';
 import { applyStagedUpdate } from './update.js';
 import { configureAppIdentity } from './app-identity.js';
@@ -444,6 +446,12 @@ void app.whenReady().then(async () => {
   if (windowActivation.isDisabled()) return;
   try {
     await restoreOrchestratorRuns();
+    const activeWorkerIds = new Set(
+      swarmState().agents
+        .filter(agent => agent.role === 'worker' && !['finished', 'failed'].includes(agent.state))
+        .map(agent => agent.id)
+    );
+    await getOrchestratorRuntimeDriver().reconcileOnStartup(activeWorkerIds);
   } catch (err) {
     logWarn(`startup: orchestrator restore failed: ${err instanceof Error ? err.message : String(err)}`);
   }

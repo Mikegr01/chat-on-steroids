@@ -329,6 +329,8 @@ const api = {
   hasSpawnAuthorization: (conversationId: string) => call<{ ok: boolean; authorized: boolean }>('agents:hasSpawnAuthorization', { conversationId }),
   startOrchestratorRun: (sessionId: string, objective: string, stages: string[]) =>
     call<import('../main/orchestrator/types.js').OrchestratorRun>('orchestrator:start', { sessionId, objective, stages }),
+  getOrchestratorRunForSession: (sessionId: string) =>
+    call<import('../main/orchestrator/types.js').OrchestratorRun | null>('orchestrator:getForSession', { sessionId }),
 
   onStateChanged: (listener: (state: AppState) => void): (() => void) => {
     const wrapped = (_event: unknown, state: AppState): void => listener(state);
@@ -362,6 +364,16 @@ const api = {
     const wrapped = (_event: unknown, state: SwarmState): void => listener(state);
     ipcRenderer.on('swarm:changed', wrapped);
     return () => ipcRenderer.removeListener('swarm:changed', wrapped);
+  },
+  onOrchestratorChanged: (
+    listener: (run: import('../main/orchestrator/types.js').OrchestratorRun) => void
+  ): (() => void) => {
+    const wrapped = (
+      _event: unknown,
+      run: import('../main/orchestrator/types.js').OrchestratorRun
+    ): void => listener(run);
+    ipcRenderer.on('orchestrator:changed', wrapped);
+    return () => ipcRenderer.removeListener('orchestrator:changed', wrapped);
   }
 };
 
