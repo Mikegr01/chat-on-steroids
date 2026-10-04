@@ -39,7 +39,7 @@
     "message": "ChatGPT, başlangıç metni eklenirken mesaj alanını değiştirdi"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT başlangıç için kullanılabilir bir mesaj alanı göstermedi"
+    "message": "Model seçiminden sonra ChatGPT kullanılabilir bir ileti alanını yeniden göstermedi"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "işaretlenen yeni sohbet başlangıç mesajı gönderilmeden önce değişti; hiçbir şey gönderilmedi"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "mevcut bir sohbete sunuldu ve hedef sohbet belirtilmedi"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "Model seçiminden sonra ChatGPT kullanılabilir bir ileti alanını yeniden göstermedi"
   },
   "content_bootstrap_model_unavailable": {
     "message": "İstenen model veya akıl yürütme kullanılamıyor ya da ChatGPT içinde doğrulanamadı"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "evet"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT h?l? i?liyor"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI bu yan?t? olu?turmak i?in normalden daha uzun s?r?yor. Hi?bir i?lem yeniden y?r?t?lmedi."
   }
 }

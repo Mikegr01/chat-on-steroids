@@ -39,7 +39,7 @@
     "message": "ChatGPT replaced the composer while inserting the bootstrap"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT never exposed a usable composer for bootstrap"
+    "message": "ChatGPT never re-exposed a usable composer after model selection"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "the marked fresh chat changed before bootstrap send; nothing was sent"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "it was offered to a chat that already exists and it does not name one"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT never re-exposed a usable composer after model selection"
   },
   "content_bootstrap_model_unavailable": {
     "message": "The requested model or reasoning is unavailable or could not be confirmed in ChatGPT"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "yes"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT is still processing"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI is taking longer than usual to produce this response. No action has been replayed."
   }
 }

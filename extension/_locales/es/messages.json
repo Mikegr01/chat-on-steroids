@@ -39,7 +39,7 @@
     "message": "ChatGPT sustituyó el redactor mientras se insertaba el inicio"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT nunca mostró un redactor utilizable para el inicio"
+    "message": "ChatGPT no volvió a mostrar un editor utilizable tras seleccionar el modelo"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "el chat nuevo marcado cambió antes del envío inicial; no se envió nada"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "se ofreció a un chat que ya existe y no identifica ninguno"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT no volvió a mostrar un editor utilizable tras seleccionar el modelo"
   },
   "content_bootstrap_model_unavailable": {
     "message": "El modelo o nivel de razonamiento solicitado no está disponible o no pudo confirmarse en ChatGPT"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "sí"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT sigue procesando"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI est? tardando m?s de lo habitual en generar esta respuesta. No se ha repetido ninguna acci?n."
   }
 }

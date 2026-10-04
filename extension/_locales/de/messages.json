@@ -1042,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "ja"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT verarbeitet die Anfrage noch"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI ben?tigt l?nger als gew?hnlich, um diese Antwort zu erstellen. Es wurde keine Aktion erneut ausgef?hrt."
   }
 }

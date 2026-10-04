@@ -39,7 +39,7 @@
     "message": "插入引导消息时，ChatGPT 替换了输入框"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT 始终未提供可用于引导消息的输入框"
+    "message": "选择模型后，ChatGPT 未重新显示可用的输入框"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "发送引导消息前，标记的新聊天发生了变化；未发送任何内容"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "它被提供给一个已有聊天，但没有指定目标聊天"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "选择模型后，ChatGPT 未重新显示可用的输入框"
   },
   "content_bootstrap_model_unavailable": {
     "message": "请求的模型或推理级别不可用，或无法在 ChatGPT 中确认"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "是"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT ?????"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI ???????????????????????????"
   }
 }

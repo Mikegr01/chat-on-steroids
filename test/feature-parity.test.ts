@@ -24,7 +24,10 @@ describe('portable browser-backed feature parity', () => {
         maxWorkers: 2,
         allowUnattributedCalls: true,
         recoverAgentTabs: false,
-        waitForSubAgents: false
+        waitForSubAgents: false,
+        workerPolicy: 'off',
+        workerModelPolicy: 'auto',
+        verifierModelPolicy: 'auto'
       });
       expect(browserExtensionRequired(config)).toBe(true);
     }

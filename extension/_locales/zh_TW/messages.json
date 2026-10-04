@@ -39,7 +39,7 @@
     "message": "ChatGPT 在插入啟動引導訊息時替換了輸入框"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT 始終未提供可用於啟動引導的輸入框"
+    "message": "選擇模型後，ChatGPT 未重新顯示可用的輸入框"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "傳送啟動引導訊息前，已標記的新聊天發生變化；未傳送任何內容"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "它被提供給既有聊天，但未指定目標聊天"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "選擇模型後，ChatGPT 未重新顯示可用的輸入框"
   },
   "content_bootstrap_model_unavailable": {
     "message": "要求的模型或推理層級無法使用，或無法在 ChatGPT 中確認"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "是"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT ?????"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI ???????????????????????????"
   }
 }

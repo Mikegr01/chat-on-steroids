@@ -415,7 +415,7 @@ it('allows unattributed file edits through code mode while preserving permission
   expect(text(finish)).toContain('Exact session identity');
   const config = getConfig();
   try {
-    await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true } });
+    await saveConfig({ ...config, multiAgent: { ...config.multiAgent, enabled: true, workerPolicy: 'auto' } });
     const spawn = await call(undefined, 'text(await tools.agents({action:"spawn",workers:[{task:"Must never start"}]}));');
     expect(JSON.parse(emittedText(spawn)).isError).toBe(true);
     expect(text(spawn)).toContain('UNIDENTIFIED_CALLER');

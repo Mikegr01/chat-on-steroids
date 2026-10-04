@@ -39,7 +39,7 @@
     "message": "初期メッセージの挿入中に ChatGPT が入力欄を置き換えました"
   },
   "content_bootstrap_composer_unavailable": {
-    "message": "ChatGPT が初期メッセージ用の入力欄を利用可能にしませんでした"
+    "message": "モデル選択後にChatGPTが使用可能な入力欄を再表示しませんでした"
   },
   "content_bootstrap_fresh_chat_changed": {
     "message": "指定した新しいチャットが初期メッセージ送信前に変わりました。何も送信されていません"
@@ -52,9 +52,6 @@
   },
   "content_bootstrap_missing_target": {
     "message": "既存のチャットに渡されましたが、対象のチャットが指定されていません"
-  },
-  "content_bootstrap_composer_unavailable": {
-    "message": "モデル選択後にChatGPTが使用可能な入力欄を再表示しませんでした"
   },
   "content_bootstrap_model_unavailable": {
     "message": "指定したモデルまたは推論設定を利用できないか、ChatGPT で確認できませんでした"
@@ -1045,5 +1042,11 @@
   },
   "popup_yes": {
     "message": "はい"
+  },
+  "content_chatgpt_platform_delay": {
+    "message": "ChatGPT ????????"
+  },
+  "content_chatgpt_platform_delay_detail": {
+    "message": "OpenAI ???????????????????????????????????????????"
   }
 }
