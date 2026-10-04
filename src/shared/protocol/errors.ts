@@ -1,0 +1,62 @@
+import { z } from 'zod';
+
+/**
+ * Authoritative Protocol Error Codes.
+ * Raw exception strings are diagnostics only; decisions must be based on these typed codes.
+ */
+export const ProtocolErrorCode = {
+  TRANSPORT_UNAVAILABLE: 'TRANSPORT_UNAVAILABLE',
+  PROTOCOL_MISMATCH: 'PROTOCOL_MISMATCH',
+  CAPABILITY_UNAVAILABLE: 'CAPABILITY_UNAVAILABLE',
+  SESSION_NOT_BOUND: 'SESSION_NOT_BOUND',
+  WRONG_CONVERSATION: 'WRONG_CONVERSATION',
+  TAB_NOT_FOUND: 'TAB_NOT_FOUND',
+  TAB_CLOSED: 'TAB_CLOSED',
+  COMPOSER_NOT_FOUND: 'COMPOSER_NOT_FOUND',
+  COMPOSER_STALE: 'COMPOSER_STALE',
+  COMMAND_EXPIRED: 'COMMAND_EXPIRED',
+  COMMAND_AMBIGUOUS: 'COMMAND_AMBIGUOUS',
+  STALE_GENERATION: 'STALE_GENERATION',
+  SUBMISSION_FAILED: 'SUBMISSION_FAILED',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+  CANCELED: 'CANCELED',
+  ALREADY_COMMITTED: 'ALREADY_COMMITTED',
+  DUPLICATE_CLAIM: 'DUPLICATE_CLAIM',
+  IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
+  OUT_OF_ORDER_EVENT: 'OUT_OF_ORDER_EVENT',
+  STORE_CORRUPT: 'STORE_CORRUPT',
+  UNKNOWN_ERROR: 'UNKNOWN_ERROR'
+} as const;
+
+export const protocolErrorCodeSchema = z.enum([
+  'TRANSPORT_UNAVAILABLE',
+  'PROTOCOL_MISMATCH',
+  'CAPABILITY_UNAVAILABLE',
+  'SESSION_NOT_BOUND',
+  'WRONG_CONVERSATION',
+  'TAB_NOT_FOUND',
+  'TAB_CLOSED',
+  'COMPOSER_NOT_FOUND',
+  'COMPOSER_STALE',
+  'COMMAND_EXPIRED',
+  'COMMAND_AMBIGUOUS',
+  'STALE_GENERATION',
+  'SUBMISSION_FAILED',
+  'PERMISSION_DENIED',
+  'CANCELED',
+  'ALREADY_COMMITTED',
+  'DUPLICATE_CLAIM',
+  'IDEMPOTENCY_CONFLICT',
+  'OUT_OF_ORDER_EVENT',
+  'STORE_CORRUPT',
+  'UNKNOWN_ERROR'
+]);
+export type ProtocolErrorCode = z.infer<typeof protocolErrorCodeSchema>;
+
+export const protocolErrorSchema = z.object({
+  code: protocolErrorCodeSchema,
+  message: z.string().min(1).max(500),
+  retryable: z.boolean(),
+  details: z.record(z.string(), z.string()).optional()
+});
+export type ProtocolError = z.infer<typeof protocolErrorSchema>;
