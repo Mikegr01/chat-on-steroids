@@ -108,6 +108,7 @@ import {
   type ChatObservation,
   type PageCallEvidence
 } from './session/recorder.js';
+import { enqueueShadowV0, noteShadowV0Failure } from './browser-transport/shadow.js';
 import { noticeChatStopped } from './stuck-notice.js';
 import {
   autoCompactionReady,
@@ -2323,6 +2324,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const revived = noteAgentAlive(id, 'page');
     if (revived?.report) await recordAgentMessage(revived.report, 'sent', id);
     const observations = parseObservations(body['events']);
+    // Kosmosyn Shadow V0 is diagnostic-only. Projection failures are contained here, and
+    // its compact bounded drain is deliberately not awaited or joined to production authority.
+    try {
+      enqueueShadowV0(id, observations);
+    } catch {
+      try { noteShadowV0Failure(); } catch { /* Shadow failure must never escape into /events. */ }
+    }
     observationWritesInFlight += 1;
     let committed: { sessionId: string | null; stored: number; wake: boolean } | undefined;
     try {
