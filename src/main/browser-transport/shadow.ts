@@ -8,7 +8,19 @@ export interface ShadowObservation {
   kind: 'USER_MESSAGE_OBSERVED';
   conversationId: string;
   nativeMessageId: string;
+  browserDocumentId?: string;
   observedAt: number;
+}
+
+export interface ObservationDocumentMetadata {
+  browserDocumentId?: string;
+  malformed?: boolean;
+}
+
+export const observationDocumentMetadata = new WeakMap<ChatObservation, ObservationDocumentMetadata>();
+
+export function validBrowserDocumentId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value);
 }
 
 interface ShadowCounters {
@@ -102,6 +114,14 @@ export function enqueueShadowV0(conversationId: string, observations: readonly C
       continue;
     }
 
+    const meta = observationDocumentMetadata.get(observation);
+    if (meta?.malformed) {
+      bump('rejected');
+      continue;
+    }
+
+    const docId: string | undefined = meta?.browserDocumentId;
+
     const key = dedupeKey(conversationId, observation.messageId);
     if (seenKeys.has(key) || pendingKeys.has(key)) {
       bump('duplicates');
@@ -112,12 +132,16 @@ export function enqueueShadowV0(conversationId: string, observations: readonly C
       continue;
     }
 
-    pending.push({
+    const shadowObs: ShadowObservation = {
       kind: 'USER_MESSAGE_OBSERVED',
       conversationId,
       nativeMessageId: observation.messageId,
       observedAt: Date.now()
-    });
+    };
+    if (docId) {
+      shadowObs.browserDocumentId = docId;
+    }
+    pending.push(shadowObs);
     pendingKeys.add(key);
   }
   scheduleDrain();

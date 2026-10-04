@@ -403,11 +403,13 @@ async function persistJournalNow() {
     } catch (err) {
       if (!durabilityGap) {
         durabilityGap = true;
+        const source = journal.length > 0 ? journal[journal.length - 1] : null;
         journal.push(
           gapEntry(
-            journal.length > 0 ? journal[journal.length - 1] : null,
+            source,
             'chat_error',
-            '⚠ The browser refused to store this extension’s pending observations. Until the app accepts them they exist only in memory, so closing the browser or reloading the extension would lose them.'
+            '⚠ The browser refused to store this extension’s pending observations. Until the app accepts them they exist only in memory, so closing the browser or reloading the extension would lose them.',
+            { includeBrowserDocumentId: false }
           )
         );
       }
@@ -492,11 +494,21 @@ function routeOf(entry) {
 
 function routeKey(entry) {
   const route = routeOf(entry);
-  return JSON.stringify([route.conversationId, route.provisional, route.agent, route.agentCommandId]);
+  const docId = entry && typeof entry.browserDocumentId === 'string' ? entry.browserDocumentId : '';
+  return JSON.stringify([route.conversationId, route.provisional, route.agent, route.agentCommandId, docId]);
 }
 
-function gapEntry(source, kind, text) {
-  return { ...routeOf(source), gap: true, event: { kind, time: Date.now(), text } };
+function gapEntry(source, kind, text, options = {}) {
+  const includeDocId = options ? options.includeBrowserDocumentId !== false : true;
+  const docId = includeDocId && source && typeof source.browserDocumentId === 'string' && source.browserDocumentId.length > 0
+    ? source.browserDocumentId
+    : null;
+  return {
+    ...routeOf(source),
+    gap: true,
+    ...(docId ? { browserDocumentId: docId } : {}),
+    event: { kind, time: Date.now(), text }
+  };
 }
 
 /**
@@ -607,7 +619,10 @@ function makeRoom(tighten = false) {
   }
 }
 
-function enqueue(entries) {
+function enqueue(entries, browserDocumentId) {
+  const docId = typeof browserDocumentId === 'string' && browserDocumentId.length > 0
+    ? browserDocumentId
+    : null;
   for (const entry of entries) {
     if (!entry || !entry.event || typeof entry.event.kind !== 'string') continue;
     journal.push({
@@ -617,6 +632,7 @@ function enqueue(entries) {
       provisional: typeof entry.provisional === 'string' ? entry.provisional : null,
       agent: typeof entry.agent === 'string' ? entry.agent : null,
       agentCommandId: typeof entry.agentCommandId === 'string' ? entry.agentCommandId : null,
+      ...(docId ? { browserDocumentId: docId } : {}),
       event: entry.event
     });
   }
@@ -723,6 +739,16 @@ function nextJournalBatch(preferredConversationId = null, excluded = []) {
   return conversationId ? { conversationId, mine, agent, agentCommandId } : null;
 }
 
+function serializeJournalEvent(entry) {
+  const event = { ...entry.event };
+  if (typeof entry.browserDocumentId === 'string' && entry.browserDocumentId.length > 0) {
+    event.browserDocumentId = entry.browserDocumentId;
+  } else if ('browserDocumentId' in event) {
+    delete event.browserDocumentId;
+  }
+  return event;
+}
+
 async function deliverJournalBatch(batch) {
   const { conversationId, mine, agent, agentCommandId } = batch;
   const result = await call('/events', {
@@ -732,7 +758,7 @@ async function deliverJournalBatch(batch) {
       conversationId,
       agent,
       agentCommandId,
-      events: mine.map((entry) => entry.event)
+      events: mine.map(serializeJournalEvent)
     })
   });
   noteDelivery(result, mine.length, conversationId);
@@ -742,7 +768,7 @@ async function deliverJournalBatch(batch) {
     const retry = await call('/events', {
       method: 'POST',
       timeoutMs: EVENTS_REQUEST_TIMEOUT_MS,
-      body: JSON.stringify({ conversationId, agent, agentCommandId, events: half.map((entry) => entry.event) })
+      body: JSON.stringify({ conversationId, agent, agentCommandId, events: half.map(serializeJournalEvent) })
     });
     noteDelivery(retry, half.length, conversationId);
     if (!retry.ok) return false;
@@ -3425,7 +3451,10 @@ const HANDLERS = {
     const entries = (Array.isArray(message.entries) ? message.entries : []).map((entry) =>
       entry && !entry.conversationId ? { ...entry, provisional: key } : entry
     );
-    enqueue(entries);
+    const docId = source && typeof source.documentId === 'string' && source.documentId.length > 0
+      ? source.documentId
+      : null;
+    enqueue(entries, docId);
     let ackBound = 0;
     if (message.conversationId) {
       bindProvisional(key, message.conversationId);

@@ -3305,8 +3305,8 @@ describe('extension observation journal', () => {
     });
 
     expect(posted).toEqual([
-      { conversationId: a, events: [{ kind: 'progress', time: expect.any(Number), text: 'A1' }, { kind: 'progress', time: expect.any(Number), text: 'A2' }] },
-      { conversationId: b, events: [{ kind: 'progress', time: expect.any(Number), text: 'B1' }] }
+      { conversationId: a, events: [{ kind: 'progress', time: expect.any(Number), text: 'A1', browserDocumentId: 'document-1-0' }, { kind: 'progress', time: expect.any(Number), text: 'A2', browserDocumentId: 'document-1-0' }] },
+      { conversationId: b, events: [{ kind: 'progress', time: expect.any(Number), text: 'B1', browserDocumentId: 'document-1-0' }] }
     ]);
     expect(journalOf(session)).toEqual([]);
   });
@@ -4141,6 +4141,40 @@ describe('extension observation journal', () => {
     const reply = await worker.send({ type: 'events', entries });
     expect(reply.durable).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(session.data), 'utf8')).toBeLessThanOrEqual(3_500_000);
+  });
+
+  it('stamps Chrome-authorized source.documentId onto journaled observations and preserves it across /events', async () => {
+    const local = new FakeStorageArea({ port: 8765, token: 'paired' });
+    const session = new FakeStorageArea();
+    const posted: any[] = [];
+    const worker = loadWorker({
+      local,
+      session,
+      fetch: async (input, init = {}) => {
+        const url = new URL(input);
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true, bridge: 14 });
+        if (url.pathname === '/events') {
+          posted.push(JSON.parse(String(init.body)));
+          return response(200, { ok: true });
+        }
+        return response(200, {});
+      }
+    });
+
+    const conversationId = '12345678-1234-1234-1234-1234567890ab';
+    const documentId = 'auth-doc-identity-1';
+
+    await worker.send({
+      type: 'events',
+      entries: [{
+        conversationId,
+        browserDocumentId: 'spoofed-document',
+        event: { kind: 'user_message', time: 1, messageId: 'm1', text: 'test', browserDocumentId: 'spoofed-doc' }
+      }]
+    }, 1, documentId);
+
+    await vi.waitFor(() => expect(posted.length).toBeGreaterThan(0));
+    expect(posted[0].events[0].browserDocumentId).toBe(documentId);
   });
 });
 

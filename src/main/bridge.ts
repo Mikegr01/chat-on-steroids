@@ -108,7 +108,12 @@ import {
   type ChatObservation,
   type PageCallEvidence
 } from './session/recorder.js';
-import { enqueueShadowV0, noteShadowV0Failure } from './browser-transport/shadow.js';
+import {
+  enqueueShadowV0,
+  noteShadowV0Failure,
+  observationDocumentMetadata,
+  validBrowserDocumentId
+} from './browser-transport/shadow.js';
 import { noticeChatStopped } from './stuck-notice.js';
 import {
   autoCompactionReady,
@@ -1277,6 +1282,13 @@ function parseObservations(input: unknown): ChatObservation[] {
     if (typeof item['recoverable'] === 'boolean') observation.recoverable = item['recoverable'];
     if (item['blocking'] === true) observation.blocking = true;
     if (Array.isArray(item['calls'])) observation.calls = parseCallEvidence(item['calls']);
+    if (item['browserDocumentId'] !== undefined) {
+      if (validBrowserDocumentId(item['browserDocumentId'])) {
+        observationDocumentMetadata.set(observation, { browserDocumentId: item['browserDocumentId'] });
+      } else {
+        observationDocumentMetadata.set(observation, { malformed: true });
+      }
+    }
     out.push(observation);
   }
   return out;
