@@ -1,5 +1,6 @@
 import type { ChatObservation } from '../session/recorder.js';
 import type { TurnOutcome } from '../../shared/session.js';
+import { getConfirmedBrowserInputReceipts, type ConfirmedBrowserInputReceipt } from '../session/input.js';
 
 export const SHADOW_V0_MAX_OBSERVATIONS = 256;
 type ShadowV0Fault = 'projector' | 'processing';
@@ -8,7 +9,8 @@ export type ShadowObservation =
   | { kind: 'USER_MESSAGE_OBSERVED'; conversationId: string; nativeMessageId: string; browserDocumentId?: string; observedAt: number }
   | { kind: 'ASSISTANT_MESSAGE_OBSERVED'; conversationId: string; firstLogicalMessageId: string; observedLogicalMessageId: string; providerMessageId?: string; state: 'streaming' | 'final'; turnId?: string; changes: AssistantChange[]; eventTime: number; browserDocumentId?: string; observedAt: number }
   | { kind: 'TURN_START_OBSERVED'; conversationId: string; turnId: string; eventTime: number; browserDocumentId?: string; observedAt: number }
-  | { kind: 'TURN_END_OBSERVED'; conversationId: string; turnId: string; outcome: TurnOutcome; providerMessageId?: string; reason?: 'thinking_failed'; eventTime: number; browserDocumentId?: string; observedAt: number };
+  | { kind: 'TURN_END_OBSERVED'; conversationId: string; turnId: string; outcome: TurnOutcome; providerMessageId?: string; reason?: 'thinking_failed'; eventTime: number; browserDocumentId?: string; observedAt: number }
+  | { kind: 'LEGACY_INPUT_NATIVE_CORRELATED'; legacyInputIds: [string] | [string, string]; conversationId: string; nativeMessageId: string; browserDocumentId?: string; evidence: 'INPUT_ACK_AND_SHADOW'; observedAt: number };
 
 export interface ObservationDocumentMetadata { browserDocumentId?: string; malformed?: boolean }
 export const observationDocumentMetadata = new WeakMap<ChatObservation, ObservationDocumentMetadata>();
@@ -132,6 +134,208 @@ export function enqueueShadowV0(conversationId: string, observations: readonly C
   scheduleDrain();
 }
 export function noteShadowV0Failure(): void { bump('failures'); }
+
+let correlationInFlight: Promise<void> | null = null;
+let activeCorrelationToken: object | null = null;
+let rerunRequested = false;
+let receiptReaderForTests: (() => Promise<readonly ConfirmedBrowserInputReceipt[]>) | null = null;
+/** Test-only source override for deterministic blocked snapshot reads. */
+export function setShadowS3ReceiptReaderForTests(reader: (() => Promise<readonly ConfirmedBrowserInputReceipt[]>) | null): void {
+  receiptReaderForTests = reader;
+}
+
+/** Strong Kosmosyn S3 correlation between confirmed browser InputEntry obligations and S2 native user-message observations. */
+async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserInputReceipt[]): Promise<void> {
+  if (!enabled()) return;
+  const expectedGeneration = generation;
+  if (testFault === 'projector') throw new Error('injected_shadow_v0_projector_failure');
+    let receipts: readonly ConfirmedBrowserInputReceipt[];
+    try {
+      receipts = explicitReceipts ?? await (receiptReaderForTests ?? getConfirmedBrowserInputReceipts)();
+    } catch {
+      bump('failures');
+      return;
+    }
+
+    if (expectedGeneration !== generation) return;
+
+    if (!Array.isArray(receipts) || receipts.length === 0) return;
+
+    const validReceipts = receipts.filter(r =>
+      typeof r?.legacyInputId === 'string' && r.legacyInputId.length > 0 &&
+      typeof r?.conversationId === 'string' && r.conversationId.length > 0 &&
+      typeof r?.nativeMessageId === 'string' && r.nativeMessageId.length > 0 && !r.nativeMessageId.startsWith('input:') &&
+      typeof r?.deliveredAt === 'number' && Number.isFinite(r.deliveredAt) &&
+      ['sent', 'cancelled', 'decision'].includes(r.deliveryState)
+    );
+
+    if (validReceipts.length === 0) return;
+
+    // Group receipts by exact native tuple: `${conversationId}:::${nativeMessageId}`
+    const groups = new Map<string, ConfirmedBrowserInputReceipt[]>();
+    for (const r of validReceipts) {
+      const key = `${r.conversationId}:::${r.nativeMessageId}`;
+      const list = groups.get(key) ?? [];
+      list.push(r);
+      groups.set(key, list);
+    }
+
+    interface CandidateSend {
+      legacyInputIds: [string] | [string, string];
+      conversationId: string;
+      nativeMessageId: string;
+    }
+
+    const candidates: CandidateSend[] = [];
+
+    for (const group of groups.values()) {
+      if (group.length === 1) {
+        const item = group[0]!;
+        if (item.companionInputId) {
+          // Companion relation incomplete / missing companion with same tuple
+          continue;
+        }
+        candidates.push({
+          legacyInputIds: [item.legacyInputId],
+          conversationId: item.conversationId,
+          nativeMessageId: item.nativeMessageId
+        });
+      } else if (group.length === 2) {
+        const a = group[0];
+        const b = group[1];
+        if (a && b) {
+          if (a.companionInputId === b.legacyInputId && !b.companionInputId) {
+            candidates.push({
+              legacyInputIds: [a.legacyInputId, b.legacyInputId],
+              conversationId: a.conversationId,
+              nativeMessageId: a.nativeMessageId
+            });
+          } else if (b.companionInputId === a.legacyInputId && !a.companionInputId) {
+            candidates.push({
+              legacyInputIds: [b.legacyInputId, a.legacyInputId],
+              conversationId: a.conversationId,
+              nativeMessageId: a.nativeMessageId
+            });
+          } else {
+            // Unrelated entries sharing the same native tuple: REJECT_CONFLICT
+            bump('rejected');
+          }
+        }
+      } else {
+        // More than 2 entries sharing same native tuple: REJECT_CONFLICT
+        bump('rejected');
+      }
+    }
+
+    const existingCorrelated = allFacts().filter((f): f is Extract<ShadowObservation, { kind: 'LEGACY_INPUT_NATIVE_CORRELATED' }> =>
+      f.kind === 'LEGACY_INPUT_NATIVE_CORRELATED'
+    );
+
+    for (const candidate of candidates) {
+      let isDuplicate = false;
+      let hasConflict = false;
+
+      for (const existing of existingCorrelated) {
+        const exactSameIds =
+          existing.legacyInputIds.length === candidate.legacyInputIds.length &&
+          existing.legacyInputIds.every(id => candidate.legacyInputIds.includes(id));
+
+        if (exactSameIds) {
+          if (
+            existing.conversationId === candidate.conversationId &&
+            existing.nativeMessageId === candidate.nativeMessageId
+          ) {
+            isDuplicate = true;
+            break;
+          } else {
+            hasConflict = true;
+            break;
+          }
+        } else {
+          const sharesId = candidate.legacyInputIds.some(id => existing.legacyInputIds.includes(id));
+          if (sharesId) {
+            hasConflict = true;
+            break;
+          }
+          if (
+            existing.conversationId === candidate.conversationId &&
+            existing.nativeMessageId === candidate.nativeMessageId
+          ) {
+            hasConflict = true;
+            break;
+          }
+        }
+      }
+
+      if (hasConflict) {
+        bump('rejected');
+        continue;
+      }
+      if (isDuplicate) {
+        bump('duplicates');
+        continue;
+      }
+
+      // Check S2 native user message observation
+      const userFact = allFacts().find((f): f is Extract<ShadowObservation, { kind: 'USER_MESSAGE_OBSERVED' }> =>
+        f.kind === 'USER_MESSAGE_OBSERVED' &&
+        f.conversationId === candidate.conversationId &&
+        f.nativeMessageId === candidate.nativeMessageId
+      );
+
+      if (!userFact) {
+        // Observation has not arrived yet; cannot correlate
+        continue;
+      }
+
+      const fact: ShadowObservation = {
+        kind: 'LEGACY_INPUT_NATIVE_CORRELATED',
+        legacyInputIds: candidate.legacyInputIds,
+        conversationId: candidate.conversationId,
+        nativeMessageId: candidate.nativeMessageId,
+        ...(userFact.browserDocumentId ? { browserDocumentId: userFact.browserDocumentId } : {}),
+        evidence: 'INPUT_ACK_AND_SHADOW',
+        observedAt: Date.now()
+      };
+
+      admit(fact);
+    }
+
+    scheduleDrain();
+}
+
+/** Direct deterministic correlation seam for tests with explicit receipts. */
+export async function correlateShadowS3(explicitReceipts?: readonly ConfirmedBrowserInputReceipt[]): Promise<void> {
+  await executeCorrelation(explicitReceipts);
+}
+
+/** Production trigger: an active pass retains only one coalesced rerun bit. */
+export function requestShadowS3Correlation(): void {
+  if (!enabled()) return;
+  if (activeCorrelationToken) { rerunRequested = true; return; }
+  const token = {};
+  activeCorrelationToken = token;
+  const run = (async () => {
+    try {
+      do {
+        rerunRequested = false;
+        try { await executeCorrelation(); }
+        catch { bump('failures'); }
+      } while (activeCorrelationToken === token && rerunRequested);
+    } finally {
+      if (activeCorrelationToken === token) {
+        activeCorrelationToken = null;
+        rerunRequested = false;
+        correlationInFlight = null;
+      }
+    }
+  })();
+  correlationInFlight = run;
+}
+
+/** Narrow test-only scheduler diagnostic. */
+export function shadowS3SchedulerForTests() { return { active: activeCorrelationToken !== null, rerunRequested }; }
+
 /** Narrow deterministic test seam; production has no Shadow diagnostics API. */
 export function shadowV0SnapshotForTests() {
   const entities = new Set<string>();
@@ -144,15 +348,26 @@ export function shadowV0SnapshotForTests() {
     if (fact.providerMessageId) provider.add(prefix + fact.providerMessageId);
   }
   return { enabled: enabled(), capacity: SHADOW_V0_MAX_OBSERVATIONS, retained: retained.length, pending: pending.length,
-    observations: retained.map(fact => ({ ...fact, ...(fact.kind === 'ASSISTANT_MESSAGE_OBSERVED' ? { changes: [...fact.changes] } : {}) })) as Array<ShadowObservation & { nativeMessageId?: string }>,
+    observations: retained.map(fact => ({
+      ...fact,
+      ...(fact.kind === 'ASSISTANT_MESSAGE_OBSERVED' ? { changes: [...fact.changes] } : {}),
+      ...(fact.kind === 'LEGACY_INPUT_NATIVE_CORRELATED' ? { legacyInputIds: [...fact.legacyInputIds] } : {})
+    })) as Array<ShadowObservation & { nativeMessageId?: string; legacyInputIds?: string[] }>,
     aliasCounts: { entities: entities.size, logical: logical.size, provider: provider.size }, counters: { ...counters } };
 }
 export async function settleShadowV0ForTests(): Promise<void> {
-  for (let pass = 0; pass < 3 && (drainScheduled || pending.length > 0); pass += 1) await Promise.resolve();
+  if (correlationInFlight) {
+    try { await correlationInFlight; } catch {}
+  }
+  for (let pass = 0; pass < 5 && (drainScheduled || pending.length > 0); pass += 1) await Promise.resolve();
 }
 export function setShadowV0FaultForTests(fault: ShadowV0Fault | null): void { testFault = fault; }
 export function resetShadowV0ForTests(): void {
   generation += 1; drainScheduled = false; retained.length = 0; pending.length = 0;
   counters.admitted = 0; counters.duplicates = 0; counters.rejected = 0; counters.dropped = 0; counters.failures = 0;
   testFault = null;
+  correlationInFlight = null;
+  activeCorrelationToken = null;
+  rerunRequested = false;
+  receiptReaderForTests = null;
 }

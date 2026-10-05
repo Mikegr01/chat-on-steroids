@@ -110,6 +110,7 @@ import {
 } from './session/recorder.js';
 import {
   enqueueShadowV0,
+  requestShadowS3Correlation,
   noteShadowV0Failure,
   observationDocumentMetadata,
   validBrowserDocumentId
@@ -2200,6 +2201,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (route === '/input/answer') return json(res, 200, { ok: typeof body.response === 'string' && await completeBrowserDecision(body.id, body.owner, body.response, deliveredConversation) }, origin);
       const acknowledged = await acknowledgeBrowserInput(body.id, body.owner, deliveredConversation, typeof body.messageId === 'string' ? body.messageId : undefined);
       if (acknowledged && deliveredConversation) await collectRecordedBrowserDecision(deliveredConversation);
+      if (acknowledged) {
+        try {
+          requestShadowS3Correlation();
+        } catch {
+          try { noteShadowV0Failure(); } catch {}
+        }
+      }
       return json(res, 200, { ok: acknowledged }, origin);
     }
     const target = body.conversationId === null ? null : conversationId(body.conversationId);
@@ -2340,6 +2348,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // its compact bounded drain is deliberately not awaited or joined to production authority.
     try {
       enqueueShadowV0(id, observations);
+      if (observations.some(obs => obs.kind === 'user_message')) {
+        requestShadowS3Correlation();
+      }
     } catch {
       try { noteShadowV0Failure(); } catch { /* Shadow failure must never escape into /events. */ }
     }

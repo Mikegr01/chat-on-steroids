@@ -1698,3 +1698,49 @@ export async function collectRecordedBrowserDecision(conversationId: string): Pr
       final.message.truncated || final.message.text.length > 16000) return;
   await completeBrowserDecision(row.id, row.owner!, final.message.text, conversationId);
 }
+
+export type ConfirmedBrowserInputReceipt = {
+  legacyInputId: string;
+  companionInputId?: string;
+  conversationId: string;
+  nativeMessageId: string;
+  deliveryState: 'sent' | 'cancelled' | 'decision';
+  deliveredAt: number;
+};
+
+/**
+ * Pure read-only metadata snapshot for Kosmosyn S3 correlation.
+ * Never calls load(), listInputs(), expireQueued(), commit(), or publishHistory().
+ * Proves confirmed browser delivery metadata without exposing prompt or stage payloads.
+ */
+export async function getConfirmedBrowserInputReceipts(filterId?: string): Promise<readonly ConfirmedBrowserInputReceipt[]> {
+  let source: readonly InputEntry[] = [];
+  if (entries) {
+    source = entries;
+  } else {
+    const raw = await readDurable<unknown>(STATE);
+    const parsed = z.array(entrySchema).safeParse(raw ?? []);
+    if (!parsed.success) return [];
+    source = parsed.data;
+  }
+
+  const receipts: ConfirmedBrowserInputReceipt[] = [];
+  for (const row of source) {
+    if (filterId && row.id !== filterId && row.companionInputId !== filterId) continue;
+    if (!['sent', 'cancelled', 'decision'].includes(row.state)) continue;
+    if (row.delivery === 'tool' || row.attachmentDelivery === 'tool') continue;
+    if (typeof row.messageId !== 'string' || row.messageId.length === 0 || row.messageId.startsWith('input:')) continue;
+    if (typeof row.conversationId !== 'string' || row.conversationId.length === 0) continue;
+    if (typeof row.deliveredAt !== 'number' || !Number.isFinite(row.deliveredAt)) continue;
+
+    receipts.push({
+      legacyInputId: row.id,
+      ...(row.companionInputId ? { companionInputId: row.companionInputId } : {}),
+      conversationId: row.conversationId,
+      nativeMessageId: row.messageId,
+      deliveryState: row.state as 'sent' | 'cancelled' | 'decision',
+      deliveredAt: row.deliveredAt
+    });
+  }
+  return receipts;
+}
