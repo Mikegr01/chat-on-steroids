@@ -2383,6 +2383,104 @@ function inspectRequestedModels(request) {
 let maintenanceFlight = null;
 let maintenanceAgain = false;
 let wakeSocket = null;
+// S4 passive Protocol sidecar.
+// This opaque epoch belongs only to this worker incarnation and is never stored.
+const protocolEmitterEpoch = (() => {
+  try { return globalThis.crypto.randomUUID(); } catch { return null; }
+})();
+let protocolSequence = 0;
+let protocolCanaryFlight = false;
+let protocolCanaryAgain = false;
+let protocolCanaryWelcome = null;
+let protocolCanaryConnection = null;
+
+// Unlike call(), this path never provisions credentials, persists, forgets legacy
+// connection state, or invokes recovery when a diagnostic HTTP request fails.
+async function protocolCanaryCall(path, body, connection) {
+  if (wakeSocket !== connection || !token || disconnected || !port) return null;
+  const credential = token;
+  try {
+    const response = await fetchBounded(`http://127.0.0.1:${port}${path}`, {
+      method: 'POST', cache: 'no-store', headers: { ...versionHeaders(),
+        'content-type': 'application/json', authorization: `Bearer ${credential}` },
+      body: JSON.stringify(body)
+    }, 5000);
+    if (!response.ok || wakeSocket !== connection || token !== credential || disconnected) return null;
+    return await response.json();
+  } catch { return null; }
+}
+
+async function executeProtocolCanary(command, welcome) {
+  const p = command?.payload;
+  if (!protocolEmitterEpoch || command?.protocolVersion !== 1 || command.commandType !== 'SESSION_PROBE' ||
+      command.source !== 'desktop-main' || command.target !== 'extension-background' ||
+      command.conversationId !== null || command.owner !== null ||
+      typeof command.commandId !== 'string' || command.commandId.length < 8 || command.commandId.length > 128 ||
+      typeof command.sessionId !== 'string' || !command.sessionId || command.sessionId.length > 64 ||
+      !Number.isSafeInteger(command.expiresAt) || command.expiresAt <= Date.now() ||
+      !p || Array.isArray(p) || Object.keys(p).length !== 3 ||
+      p.probeTabs !== true || p.probeModels !== false || p.targetConversationId !== null ||
+      welcome?.type !== 'WELCOME' || welcome.acceptedProtocolVersion !== 1 ||
+      typeof welcome.connectionEpoch !== 'string' || welcome.connectionEpoch.length < 8 || welcome.connectionEpoch.length > 128 ||
+      !Number.isSafeInteger(welcome.connectionGeneration) || welcome.connectionGeneration < 0) return null;
+  let payload;
+  let eventType = 'COMMAND_COMPLETED';
+  try {
+    const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+    if (!Array.isArray(tabs) || !Number.isSafeInteger(tabs.length) || tabs.length > 10000) throw new Error('invalid_count');
+    payload = { observedTabCount: tabs.length };
+  } catch {
+    eventType = 'COMMAND_FAILED';
+    payload = { errorCode: 'UNKNOWN_ERROR', message: 'S4 passive tab observation failed',
+      retryable: false, failedAt: Date.now() };
+  }
+  if (!Number.isSafeInteger(protocolSequence + 1)) return null;
+  return { protocolVersion: 1, eventId: `evt_${crypto.randomUUID()}`, commandId: command.commandId,
+    eventType, source: 'extension-background', sessionId: command.sessionId, conversationId: null,
+    connectionEpoch: welcome.connectionEpoch, emitterEpoch: protocolEmitterEpoch,
+    generation: welcome.connectionGeneration, sequence: ++protocolSequence, occurredAt: Date.now(), payload };
+}
+
+async function pumpProtocolCanary() {
+  // One coalesced wake bit, no invocation backlog or recurring probe.
+  if (protocolCanaryFlight) { protocolCanaryAgain = true; return; }
+  if (!protocolEmitterEpoch || !wakeSocket || disconnected || !token) return;
+  protocolCanaryFlight = true;
+  const connection = wakeSocket;
+  try {
+    for (let pass = 0; pass < 2; pass++) {
+      protocolCanaryAgain = false;
+      let welcome = protocolCanaryConnection === connection ? protocolCanaryWelcome : null;
+      let authority = welcome ? { emitterEpoch: protocolEmitterEpoch, connectionEpoch: welcome.connectionEpoch,
+        connectionGeneration: welcome.connectionGeneration } : null;
+      let polled = authority ? await protocolCanaryCall('/protocol/poll', authority, connection) : null;
+      if (!polled) {
+        protocolCanaryWelcome = null; protocolCanaryConnection = null;
+        welcome = await protocolCanaryCall('/protocol/hello', { emitterEpoch: protocolEmitterEpoch,
+          hello: { type: 'HELLO', protocolVersion: 1, extensionVersion: chrome.runtime.getManifest().version,
+            connectionGeneration: 0, capabilities: [] } }, connection);
+        if (welcome?.type !== 'WELCOME' || welcome.acceptedProtocolVersion !== 1 ||
+            typeof welcome.connectionEpoch !== 'string' || welcome.connectionEpoch.length < 8 || welcome.connectionEpoch.length > 128 ||
+            !Number.isSafeInteger(welcome.connectionGeneration) || welcome.connectionGeneration < 0) return;
+        authority = { emitterEpoch: protocolEmitterEpoch, connectionEpoch: welcome.connectionEpoch,
+          connectionGeneration: welcome.connectionGeneration };
+        const ready = await protocolCanaryCall('/protocol/ready', { emitterEpoch: protocolEmitterEpoch,
+          ready: { type: 'READY', connectionGeneration: welcome.connectionGeneration,
+            connectionEpoch: welcome.connectionEpoch, activeSessions: [], boundTabsCount: 0 } }, connection);
+        if (ready?.ready !== true) return;
+        protocolCanaryWelcome = welcome; protocolCanaryConnection = connection;
+        polled = await protocolCanaryCall('/protocol/poll', authority, connection);
+      }
+      if (polled?.command && wakeSocket === connection) {
+        const event = await executeProtocolCanary(polled.command, welcome);
+        if (event && wakeSocket === connection)
+          await protocolCanaryCall('/protocol/events', { ...authority, event }, connection);
+      }
+      if (!protocolCanaryAgain) break;
+    }
+  } finally { protocolCanaryFlight = false; }
+}
+// End S4 passive Protocol sidecar.
 // MV3 service workers require static imports; import() rejects before registration.
 // Instantiate the backend only on hosts exposing Chrome's debugger API.
 // Credentials stay in call(); pages/content scripts cannot submit browser commands.
@@ -2423,6 +2521,7 @@ function connectWakeSocket() {
   connection.onmessage = (event) => {
     if (wakeSocket !== connection) return;
     if (event.data === 'ping') connection.send('pong');
+    else if (event.data === 'protocol-canary') void pumpProtocolCanary().catch(() => undefined);
     else if (event.data === 'browser-control') void pumpBrowserControl().catch(() => undefined);
     else if (event.data === 'wake') {
       void pumpBrowserControl().catch(() => undefined);

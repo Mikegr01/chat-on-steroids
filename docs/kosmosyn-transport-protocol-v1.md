@@ -383,3 +383,154 @@ Protocol V1 treats lifetime identity and ordering as separate concerns:
 - The event `generation` field is retained for legacy/pre-handshake compatibility. Once `connectionEpoch` exists, its numeric value has no freshness or supersession authority.
 
 The service retains only the active emitter epoch and its high-water ordering slot per command/source. It does not keep an unbounded connection or epoch journal.
+
+## S4 passive SESSION_PROBE sidecar (candidate for independent HEAD review)
+
+Baseline: `custom/main`, `0e5232fcdb14a94f7bbdc36d7979f3be2b3ac536`.
+S4 remains an internal diagnostic; legacy production transport owns ordinary input.
+No startup invocation, interval, public MCP tool, UI, content-script role, or S5 integration is added.
+
+Explicit main-process invocation is `runS4Canary({ enabled: true })` exported from `bridge.ts`.
+It requires the existing bridge to be running and sends the literal `protocol-canary` topic
+on its existing authenticated `/wake` socket. That frame carries no body or identity.
+The extension's dedicated pump does not invoke maintenance, browser-control, model discovery,
+pairing repair, or legacy input delivery. It has one active flight, one coalesced wake bit,
+and at most two passes per flight; it does not schedule retries or recurring work.
+
+All sidecar routes are POST-only on the existing loopback HTTP listener:
+
+| Route | Request body | Response |
+| --- | --- | --- |
+| `/protocol/hello` | `{ hello: HELLO, emitterEpoch }` | Existing V1 WELCOME or REJECT |
+| `/protocol/ready` | `{ ready: READY, emitterEpoch }` | `{ ready: true }` on exact current authority |
+| `/protocol/poll` | `{ connectionEpoch, connectionGeneration, emitterEpoch }` | `{ command: ProtocolCommand \| null }` |
+| `/protocol/events` | Same authority fields plus `{ event: ProtocolEvent }` | Existing service admission result |
+
+They retain constant-time paired bearer authentication, the Chrome extension Origin boundary
+(including the existing headerless extension-fetch allowance), compatibility/build fencing,
+authenticated rate limiting, and existing request body caps. They never use `/status`,
+`/events`, or legacy command queues for Protocol traffic. Disabled/idle sidecar routes return 503.
+Protocol HTTP failure does not update legacy presence or legacy connection state.
+
+`CurrentBridgeAdapter` implements the existing `TransportAdapter` with one volatile command slot.
+It rejects every command except a fixed, validated background SESSION_PROBE. Polls return a copy
+of the same durable command identity; the slot is not a second durable store. Expired envelopes
+are not handed out. Disconnect and command identity fencing prevent a late submission from
+occupying a later invocation's slot. Handout begins only after durable dispatch publication.
+
+The controller permits one active canary and returns BUSY immediately to concurrent callers.
+Initialization and HELLO/WELCOME/READY have a bounded deadline (default 5 seconds); command
+submission/completion has a separate bounded deadline (default 10 seconds; maximum 30 seconds
+per phase). No command is created before exact current READY. Each deliberate invocation uses
+new independent Protocol session, command, and idempotency identities. Retries retain the same
+durable command identity. Disable, timeout, and failure retire volatile authority and release BUSY.
+If submission/terminalization remains unresolved, one `cleanupCommandId` and one
+`cleanupInFlight` operation retain custody beyond the visible deadline. Cleanup waits for the
+non-cancellable submission to settle before reconciling that exact identity. No timed-out command
+is automatically replayed. Existing in-flight restart expiry remains unchanged.
+
+Every later explicit invocation checks retained cleanup before creating work. During a cleanup
+flight it returns bounded `CLEANUP_PENDING` without adding another continuation or command.
+After a failed flight it starts at most one reconciliation attempt and returns `CLEANUP_PENDING`;
+another deliberate invocation can proceed once cleanup has succeeded. Cleanup has constant-size
+state, no queue, timer, periodic retry, replacement probe, or command-ID reuse.
+
+The service's narrow `expireReadOnlyCommand(commandId)` authorizes only SESSION_PROBE and
+serializes with event acceptance. `PERSISTED` and `DISPATCHED` become `EXPIRED` only after
+immediate durable persistence succeeds. Existing COMPLETED/FAILED/EXPIRED/CANCELED records
+remain unchanged. A failed expiry restores the exact prior in-memory record and supersedes the
+failed persistence generation with the restored snapshot; cleanup retains its single identity
+and does not claim success. Reconciliation retries require another explicit S4 invocation.
+The first durably accepted terminal transition wins: completion/failure already in flight may
+finish before expiry; events queued behind durable expiry cannot change state or metadata.
+
+At the visible deadline the controller clears dispatch publication and the volatile slot.
+Cleanup and idle routes cannot hand the command out. The existing adapter and background
+executor additionally reject envelopes at/after `expiresAt` before a new observation begins.
+
+The only payload is `{ probeTabs: true, probeModels: false, targetConversationId: null }`,
+with command `conversationId: null`. The background executor calls only
+`chrome.tabs.query({ url: CHATGPT_TAB_URLS })` and counts the returned array. Zero tabs succeeds.
+It rejects altered payloads/targets and counts above 10000. It sends no content-document message,
+creates/activates/navigates/reloads/closes no tab, focuses no window, and writes no storage.
+No claim, document lease, composer ownership, model discovery, or mutation proof is involved.
+
+The worker mints a cryptographically strong opaque emitter epoch once per incarnation and keeps
+one monotonic source sequence in memory. Missing strong crypto disables only S4. Connection
+epochs come exclusively from WELCOME; equality fences READY, polling, and event admission.
+The existing COMMAND_COMPLETED event carries exactly `{ observedTabCount: integer }` in 0..10000.
+Query failure uses existing COMMAND_FAILED/UNKNOWN_ERROR with the fixed message
+`S4 passive tab observation failed`, no raw error, stack, URL, or tab detail.
+
+Successful controller output contains only `ok`, `commandId`, `state: COMPLETED`, `createdAt`,
+`dispatchedAt`, `completedAt`, `connectionEpoch`, and transient `observedTabCount`.
+Failure output contains only `ok`, bounded `failureCode`, and optional `commandId`/`state`.
+Completed probes have no commit proof and never enter `recentCommittedIds`.
+
+RED exposed an integration defect in the accepted service: completion ordering metadata stored
+the literal serialized tab-count payload, despite its transient-evidence contract. A narrow
+service repair uses a keyed, process-local digest for probe-completion payload equality. It
+preserves sequence collision and failed-write rollback semantics without retaining tab count
+or the digest key in the durable outbox. No wire schema, store, lifecycle transition, or mutation
+command semantics changed.
+
+Deterministic evidence lives in `test/protocol/protocol-s4-canary.test.ts`, `test/bridge.test.ts`,
+and `test/browser-wake.test.ts`. The bridge integration executes the shipped background code
+through real loopback HTTP and authenticated WebSocket traffic with a passive Chrome API fixture.
+This proves source and transport behavior; it is not an installed/live Chrome acceptance claim.
+Initial RED: eight failures across missing adapter/controller, background execution/wake, and
+four authenticated routes returning 404. Additional RED covered persisted count evidence and
+unbounded slow initialization. Existing extension and S3 tests are unchanged.
+
+Pre-repair verification (2026-10-05; historical, superseded by the timeout repair below):
+S4 59/59; Protocol 152/152 (the accepted 93 plus 59 S4);
+browser-wake 5/5; extension 262/262; bridge 581/581. Typecheck, build, and diff-check passed.
+`verify:ci` passed: 284 main test files, 6995 tests, then two serialized files with 26 tests;
+the existing five opt-in skipped files/51 skipped tests are unchanged. Privacy passed with
+724 commits/18 tags; notice/native-source checks passed. Blender passed without changes.
+An initial full run exposed missing crypto in legacy VM hosts and one transient existing
+input timing failure. Crypto failure now disables S4 only; affected untouched suites passed,
+the exact input case passed on rerun, and the subsequent complete gate passed.
+Real HTTP coexistence covers legacy status/events/command redeem/browser-control, ordinary
+input claims while idle/handshaking/outstanding and after Protocol store/handshake failure,
+concurrent correlation ingress, and unchanged Goal state. No browser/page mutation was observed
+by the executor's forbidden-operation fixtures; no installed/live acceptance is claimed.
+
+HEAD is unchanged; no staging, commit, push, packaging, or installation occurred.
+Independent HEAD review subsequently reproduced unresolved durable probes after timeout;
+the pre-repair candidate was not accepted. The timeout repair below retains that Git gate.
+`PRODUCTION_TRANSPORT_MIGRATED=NO`; `MUTATION_AUTHORITY_ADDED=NO`; `S5_IMPLEMENTATION_STARTED=NO`.
+
+### S4 timeout durable cleanup repair (2026-10-05)
+
+Before implementation changes, two deterministic durable-service regressions failed: the
+already-dispatched timeout left a DISPATCHED row, and blocked submission created a late
+PERSISTED row; both expected EXPIRED. The controller had retired visible/volatile ownership
+without retaining custody of the non-cancellable submission or reconciling durable state.
+The former regression that accepted one unresolved command now requires zero after cleanup.
+
+The focused suite now contains 79 cases. New coverage exercises delayed PERSISTED/DISPATCHED
+submission, late COMPLETED/FAILED preservation, submission rejection, repeated timeouts,
+poll fencing during blocked expiry, two bursts of 100 invocations sharing one cleanup flight,
+real filesystem expiry failure and exact rollback, explicit cleanup retry, serialized terminal
+races (including failed writes), probe-only expiry authority, and unchanged restart/no-replay
+behavior. After every settled timeout cleanup, `getUnresolvedCommands().length === 0`;
+terminal historical records remain. Normal success, zero/positive tab counts, one-slot bounds,
+mandatory handshake, stale-authority rejection, mutation exclusion, and independent legacy
+routes remain covered by the existing candidate suites.
+
+Fresh final verification: S4 79/79; Protocol 172/172; browser-wake 5/5; extension 262/262;
+bridge 581/581; typecheck, build, and diff-check passed. `npm run verify:ci` exited 0:
+284 main files / 7015 tests passed, then 2 serialized files / 26 tests passed; the existing
+5 opt-in skipped files / 51 skipped tests remain unchanged. Privacy passed (724 commits,
+18 tags), notices passed (154 packages / 9 catalog entries), native-source checks passed
+(730 archives/patches). The first full attempt exposed a 100ms setup deadline in a new
+late-terminal test; it now verifies durable DISPATCHED before holding submission through
+timeout. The historical Blender ownership case also timed out once, passed its exact
+independent rerun, and passed the complete final gate; Blender was not modified.
+
+Branch/HEAD remain `custom/main` / `0e5232fcdb14a94f7bbdc36d7979f3be2b3ac536`, staged 0,
+with exactly the original 7 modified + 3 untracked candidate files. Repair edits are limited
+to this document, `s4-canary.ts`, `service.ts`, and the S4 test file. No temporary repair files,
+staging, commit, push, merge, packaging, or installation. Source repair is ready for independent
+HEAD review; acceptance and the Git commit gate remain pending. No S5 work was started.

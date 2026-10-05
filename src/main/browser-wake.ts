@@ -3,8 +3,8 @@ import type http from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { logInfo } from './logger.js';
 
-const subscribers = new Set<(topic: 'wake' | 'browser-control') => void>();
-export function wakeBrowserWork(topic: 'wake' | 'browser-control' = 'wake'): void {
+const subscribers = new Set<(topic: 'wake' | 'browser-control' | 'protocol-canary') => void>();
+export function wakeBrowserWork(topic: 'wake' | 'browser-control' | 'protocol-canary' = 'wake'): void {
   for (const wake of subscribers) wake(topic);
 }
 
@@ -48,7 +48,7 @@ export function attachBrowserWake(server: http.Server, allowed: (request: http.I
     });
   };
   server.on('upgrade', upgrade);
-  const wake = (topic: 'wake' | 'browser-control') => {
+  const wake = (topic: 'wake' | 'browser-control' | 'protocol-canary') => {
     for (const client of authorized.keys()) {
       if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 1024) client.send(topic);
       else client.terminate();

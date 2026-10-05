@@ -1839,6 +1839,17 @@ function chatIsWorking(conversationId: string): boolean {
   return Boolean(current && (current.generating || current.activeTurnId));
 }
 
+/** Lazily constructed sidecar; only an explicit internal invocation can create work. */
+let protocolCanary: import('./browser-transport/s4-canary.js').S4Canary | null = null;
+export async function runS4Canary(options: { enabled: boolean; handshakeTimeoutMs?: number; commandTimeoutMs?: number }): Promise<import('./browser-transport/s4-canary.js').S4Result> {
+  if (options.enabled !== true) return { ok: false, failureCode: 'DISABLED' };
+  if (!server || !bridgeDesiredRunning || bridgeRecovering) return { ok: false, failureCode: 'BRIDGE_UNAVAILABLE' };
+  // Importing this module creates no listener, command, or startup canary.
+  const { S4Canary } = await import('./browser-transport/s4-canary.js');
+  protocolCanary ??= new S4Canary(() => wakeBrowserWork('protocol-canary'));
+  return protocolCanary.run(options);
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const receivedAt = Date.now();
   const { ok: originAllowed, origin } = originOf(req);
@@ -1974,6 +1985,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   // Charge only an authenticated extension. A random local process must not be able to
   // consume the browser's shared budget before failing origin/authentication.
   if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
+  if (route.startsWith('/protocol/')) {
+    if (staleCompanion(req)) return json(res, 409, { error: 'stale_extension_build' }, origin);
+    if (req.method !== 'POST' || !['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'].includes(route))
+      return json(res, 404, { error: 'not_found' }, origin);
+    let body: unknown;
+    try { body = await readBody(req); }
+    catch (err) {
+      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
+      return json(res, 400, { error: 'bad_request' }, origin);
+    }
+    const reply = protocolCanary ? await protocolCanary.request(route, body) :
+      { status: 503, body: { error: 'protocol_canary_disabled' } };
+    return json(res, reply.status, reply.body, origin);
+  }
   if (noteBrowserSeen()) changed();
 
   if (route === '/browser-control' && req.method === 'POST') {
@@ -5065,6 +5090,7 @@ function drainBridgeListener(instance: http.Server): Promise<void> {
 }
 
 export async function stopBridge(): Promise<void> {
+  protocolCanary?.disable();
   if (!bridgeDesiredRunning && bridgeStopRequest) return bridgeStopRequest;
 
   // Invalidate first, before waiting in the lifecycle queue. The currently executing start sees
@@ -9630,6 +9656,7 @@ export async function unattributedIncidentsSettledForTests(): Promise<void> {
 }
 
 export function resetBridgeForTests(): void {
+  protocolCanary?.disable();
   clearCompanionDiagnostics();
   for (const command of commands) if (command.timer) clearTimeout(command.timer);
   if (browserPresenceTimer) clearTimeout(browserPresenceTimer);

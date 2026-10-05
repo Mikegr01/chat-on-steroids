@@ -20,6 +20,15 @@ async function setup(auth: (token: string) => Promise<boolean> = async token => 
   return { bridge, client };
 }
 describe('authenticated wake-only browser transport', () => {
+  it('carries the S4 topic as one literal wake-only frame while existing topics stay unchanged', async () => {
+    const h = await setup(), client = h.client(); await once(client, 'open');
+    const initial = once(client, 'message'); client.send('paired');
+    expect(String((await initial)[0])).toBe('wake');
+    for (const topic of ['protocol-canary', 'wake', 'browser-control'] as const) {
+      const message = once(client, 'message'); wakeBrowserWork(topic);
+      expect(String((await message)[0])).toBe(topic);
+    }
+  });
   it('signals current and newly published work without carrying input text', async () => {
     const h = await setup(); const client = h.client(); await once(client, 'open');
     expect(h.bridge.connected()).toBe(false); // an unauthenticated socket is not delivery reachability

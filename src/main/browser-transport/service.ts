@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import type { TransportAdapter } from './adapter.js';
 import { ProtocolStore, isRealMutationCommit } from './store.js';
 import { EventDeduplicator } from './dedupe.js';
@@ -71,6 +71,9 @@ export class BrowserTransportService {
   private eventListeners: Set<(event: ProtocolEvent) => void> = new Set();
   private commandStateListeners: Set<(record: DurableCommandRecord) => void> = new Set();
   private eventHandling: Promise<void> = Promise.resolve();
+  // Count evidence is transient. Keep collision detection without storing the
+  // completion payload (or a brute-forceable count digest) in ordering metadata.
+  private readonly probeOrderingKey = randomUUID();
 
   constructor(adapter: TransportAdapter, options?: ServiceOptions) {
     this.adapter = adapter;
@@ -290,6 +293,31 @@ export class BrowserTransportService {
     return result;
   }
 
+  /** S4 read-only timeout custody; shares the durable event arbitration barrier. */
+  public async expireReadOnlyCommand(commandId: string): Promise<void> {
+    const result = this.eventHandling.then(async () => {
+      const record = this.store.get(commandId);
+      // Called only after submission has settled: absence means no durable work.
+      if (!record) return;
+      if (record.command.commandType !== 'SESSION_PROBE') throw new Error('NOT_READ_ONLY_PROBE');
+      if (['COMPLETED', 'FAILED', 'EXPIRED', 'CANCELED'].includes(record.state)) return;
+      if (record.state !== 'PERSISTED' && record.state !== 'DISPATCHED') throw new Error('PROBE_NOT_EXPIRABLE');
+      const before = structuredClone(record);
+      this.transitionCommand(record, 'EXPIRED', false);
+      try {
+        await this.store.updateCommand(record, true);
+      } catch (error) {
+        Object.assign(record, before);
+        // Supersede the failed durable generation with the restored truth.
+        this.store.restoreAfterFailedUpdate(record);
+        throw error;
+      }
+      this.notifyCommandState(record);
+    });
+    this.eventHandling = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   private async handleEventSerialized(event: ProtocolEvent): Promise<{ accepted: boolean; duplicate?: boolean; reason?: string }> {
     // 1. Delivery dedupe. Mark only after processing so failed durable writes remain retryable.
     if (this.dedupe.has(event.eventId)) {
@@ -302,6 +330,15 @@ export class BrowserTransportService {
       logWarn(`protocol: event ${event.eventId} references unknown command ${event.commandId}`);
       this.dedupe.markProcessed(event.eventId);
       return { accepted: false, reason: 'UNKNOWN_COMMAND' };
+    }
+
+    // Read-only terminal truth is immutable, including its error/order metadata.
+    // COMPLETED duplicates still follow the existing dedupe path below.
+    if (record.command.commandType === 'SESSION_PROBE' &&
+        (['FAILED', 'EXPIRED', 'CANCELED'].includes(record.state) ||
+          (record.state === 'COMPLETED' && event.eventType !== 'COMMAND_COMPLETED'))) {
+      this.dedupe.markProcessed(event.eventId);
+      return { accepted: false, reason: 'INVALID_LIFECYCLE_FACT' };
     }
 
     const strongCommitFact = event.eventType === 'MESSAGE_COMMITTED' &&
@@ -365,7 +402,10 @@ export class BrowserTransportService {
     const willEstablishEmitter = !activeEmitterEpoch || establishesNewEmitter;
     const emitterIsCurrent = willEstablishEmitter || activeEmitterEpoch === sourceEpoch;
     const priorOrdering = record.orderingBySource?.[event.source];
-    const payloadIdentity = semanticPayloadIdentity(event.payload);
+    const semanticIdentity = semanticPayloadIdentity(event.payload);
+    const payloadIdentity = record.command.commandType === 'SESSION_PROBE' && event.eventType === 'COMMAND_COMPLETED'
+      ? `probe:${createHmac('sha256', this.probeOrderingKey).update(semanticIdentity).digest('hex')}`
+      : semanticIdentity;
     const sameEmitterOrdering = priorOrdering?.emitterEpoch === sourceEpoch ||
       (priorOrdering?.emitterEpoch === undefined && sourceEpoch === `legacy:${event.source}`);
     const advancesOrdering = emitterIsCurrent &&

@@ -8,6 +8,8 @@
  */
 
 import http from 'node:http';
+import vm from 'node:vm';
+import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
@@ -398,6 +400,115 @@ beforeEach(async () => {
 });
 
 // ------------------------------------------------------------------ origin
+
+describe('S4 protected sidecar routes', () => {
+  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'])(
+    '%s preserves bearer, Origin, compatibility and body-cap fences', async route => {
+      await pair();
+      expect((await request('POST', route, { body: {}, auth: null })).status).toBe(401);
+      expect((await request('POST', route, { body: {}, auth: 'wrong' })).status).toBe(401);
+      expect((await request('POST', route, { body: {}, origin: 'https://chatgpt.com' })).status).toBe(403);
+      expect((await request('POST', route, { body: {}, protocol: 0 })).status).toBe(426);
+      expect((await request('POST', route, { raw: 'x'.repeat(5 * 1024 * 1024) })).status).toBe(413);
+      expect((await request('GET', route)).status).toBe(404);
+    });
+  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'])(
+    'recognizes %s behind authentication even when the explicit canary is disabled', async route => {
+      await pair();
+      const reply = await request('POST', route, { body: {} });
+      expect(reply.status).toBe(503);
+      expect(reply.body.error).toBe('protocol_canary_disabled');
+    });
+  it('completes the shipped background code over the existing real HTTP listener and wake socket', async () => {
+    await pair();
+    const { runS4Canary } = await import('../src/main/bridge.js');
+    const input = await import('../src/main/session/input.js');
+    input.resetInputForTests(); await writeDurableNow('session-input', []);
+    async function ordinaryInput(phase: string) {
+      const conversationId = randomUUID(), session = await createSession({ conversationId });
+      const before = { goal: goalSwitchFor(session.id), objective: goalObjectiveFor(session.id) };
+      const row = await input.enqueueInput({ id: randomUUID(), sessionId: session.id,
+        text: `fixture ordinary input during ${phase}`, mode: 'auto', dueAt: Date.now(), model: null, reasoningEffort: null });
+      const reply = await request('POST', '/input/claim', { body: { id: row.id, owner: `legacy-${phase}`, conversationId } });
+      expect(reply.status).toBe(200); expect(reply.body.input).toMatchObject({ id: row.id, text: row.text });
+      expect({ goal: goalSwitchFor(session.id), objective: goalObjectiveFor(session.id) }).toEqual(before);
+    }
+    const source = await fs.readFile('extension/background.js', 'utf8');
+    const code = source.slice(source.indexOf('// S4 passive Protocol sidecar.'), source.indexOf('// End S4 passive Protocol sidecar.'));
+    const socket = new WebSocket(base.replace('http:', 'ws:') + '/wake', { origin: EXTENSION_ORIGIN });
+    await once(socket, 'open'); const initial = once(socket, 'message'); socket.send(token!); await initial;
+    let releaseQuery!: (tabs: unknown[]) => void;
+    const query = vi.fn(() => new Promise<unknown[]>(resolve => { releaseQuery = resolve; }));
+    const forbidden = vi.fn(() => { throw new Error('Unexpected browser mutation'); });
+    const routes: string[] = [];
+    let failHello = false;
+    let releaseHello!: () => void;
+    const helloAllowed = new Promise<void>(resolve => { releaseHello = resolve; });
+    const context = vm.createContext({ crypto: globalThis.crypto, wakeSocket: socket, token, disconnected: false,
+      port: bridgePort(), versionHeaders: () => ({}), CHATGPT_TAB_URLS: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
+      chrome: { runtime: { getManifest: () => ({ version: APP_VERSION }) }, tabs: { query, create: forbidden,
+        update: forbidden, reload: forbidden, sendMessage: forbidden, remove: forbidden },
+        windows: { update: forbidden }, storage: { local: { set: forbidden }, session: { set: forbidden } } },
+      fetchBounded: async (url: string, init: { body: string }) => {
+        const route = new URL(url).pathname; routes.push(route);
+        if (route === '/protocol/hello' && failHello) return { ok: false, json: async () => ({}) };
+        if (route === '/protocol/hello') await helloAllowed;
+        const reply = await request('POST', route, { body: JSON.parse(init.body) });
+        return { ok: reply.status === 200, json: async () => reply.body };
+      } });
+    const pump = vm.runInContext(`${code}\npumpProtocolCanary`, context) as () => Promise<void>;
+    const flights: Promise<void>[] = [], frames: string[] = [];
+    socket.on('message', frame => { frames.push(String(frame)); if (String(frame) === 'protocol-canary') flights.push(pump()); });
+    try {
+      await ordinaryInput('idle');
+      const result = runS4Canary({ enabled: true, commandTimeoutMs: 5000 });
+      await vi.waitFor(() => expect(routes).toContain('/protocol/hello'));
+      await ordinaryInput('handshake'); releaseHello();
+      await vi.waitFor(() => expect(releaseQuery).toBeTypeOf('function'));
+      await ordinaryInput('probe');
+      expect(await runS4Canary({ enabled: true })).toEqual({ ok: false, failureCode: 'BUSY' });
+      // Ordinary authenticated traffic remains usable with a real probe outstanding.
+      const status = await request('GET', '/status');
+      expect(status.status).toBe(200); expect(status.body).not.toHaveProperty('protocol');
+      expect((await request('POST', '/events', { body: { conversationId: randomUUID(), events: [
+        { kind: 'user_message', time: Date.now(), text: 'fixture legacy observation', messageId: 'fixture-legacy-message' }
+      ] } })).status).toBe(200);
+      expect((await request('POST', '/correlations', { body: { conversationId: randomUUID(), calls: [
+        { messageId: 'fixture-s4-correlation', tool: 'read', order: 0, answered: false, requestId: `wfr_${randomUUID()}` }
+      ] } })).status).toBe(200);
+      expect((await request('POST', '/commands/redeem', { body: { id: randomUUID(), client: 's4-legacy' } })).status).toBe(404);
+      expect((await request('POST', '/browser-control', { body: { action: 'poll', browserId: randomUUID(), enabled: true, name: 'S4 coexistence' } })).status).toBe(200);
+      releaseQuery([]);
+      expect(await result).toMatchObject({ ok: true, state: 'COMPLETED', observedTabCount: 0 });
+      await Promise.all(flights);
+      expect(routes.slice(0, 2)).toEqual(['/protocol/hello', '/protocol/ready']);
+      expect(routes).toContain('/protocol/poll'); expect(routes).toContain('/protocol/events');
+      expect(frames.filter(frame => frame === 'protocol-canary')).toEqual(['protocol-canary', 'protocol-canary']);
+      expect(frames.every(frame => ['wake', 'browser-control', 'protocol-canary'].includes(frame))).toBe(true);
+      expect(query).toHaveBeenCalledTimes(1); expect(forbidden).not.toHaveBeenCalled();
+      expect(opened).toEqual([]);
+      const { ProtocolStore } = await import('../src/main/browser-transport/store.js');
+      const failStore = vi.spyOn(ProtocolStore.prototype, 'persistNewCommand').mockRejectedValueOnce(new Error('fixture Protocol store failure'));
+      try {
+        expect(await runS4Canary({ enabled: true })).toMatchObject({ ok: false, failureCode: 'SIDECAR_UNAVAILABLE' });
+        await ordinaryInput('protocol-store-failure');
+        expect((await request('GET', '/status')).status).toBe(200);
+      } finally { failStore.mockRestore(); }
+      await Promise.all(flights);
+      failHello = true;
+      const failedHandshake = runS4Canary({ enabled: true, handshakeTimeoutMs: 500 });
+      await ordinaryInput('failed-handshake');
+      expect(await failedHandshake).toMatchObject({ ok: false, failureCode: 'HANDSHAKE_TIMEOUT' });
+      await Promise.all(flights);
+      expect(context.token).toBe(token); expect(context.disconnected).toBe(false);
+      expect(query).toHaveBeenCalledTimes(1); expect(forbidden).not.toHaveBeenCalled();
+    } finally {
+      releaseHello(); releaseQuery?.([]);
+      const closed = once(socket, 'close'); socket.close(); await closed;
+      input.resetInputForTests(); await writeDurableNow('session-input', []);
+    }
+  });
+});
 
 describe('direct browser control over the paired bridge', () => {
   it('recovers request-owned browser tabs only from exact server-side correlation, including a resumed session', async () => {
