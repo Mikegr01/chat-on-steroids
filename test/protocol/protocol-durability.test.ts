@@ -157,4 +157,87 @@ describe('Kosmosyn Transport Protocol V1 - Durability & Restart Reconciliation',
     expect(service2.getStore().get(cmd.commandId)?.state).toBe('COMPLETED');
     await service2.stop();
   });
+  // ======================================================================
+  // AMENDMENT MATRIX TESTS: Non-Mutating Completion Semantics
+  // ======================================================================
+
+  it('Matrix 41-44: mutation commit retention in ProtocolStore preserves real mutation commits and never indexes SESSION_PROBE', async () => {
+    const adapter = new FakeTransportAdapter('CONNECTED');
+    const service = new BrowserTransportService(adapter, { instanceId: 'durability-matrix-1' });
+    await service.start();
+    const store = service.getStore();
+
+    // Matrix 41: completed SESSION_PROBE never enters recentCommittedIds
+    const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_dur_probe' });
+    const probeRec = await service.submitCommand(probe);
+    probeRec.state = 'COMPLETED';
+    probeRec.completedAt = Date.now();
+    await store.updateCommand(probeRec, true);
+
+    const snapshotAfterProbe = await readDurable<ProtocolStoreSnapshot>(PROTOCOL_STORE_NAME);
+    expect(snapshotAfterProbe?.recentCommittedIds).not.toContain(probe.commandId);
+
+    // Matrix 42: real COMMITTED SEND_MESSAGE remains in recentCommittedIds
+    const sendCmd = service.createCommand('SEND_MESSAGE', { text: 'mutation commit', targetConversationId: 'conv_dur_mut' }, { sessionId: 'sess_dur_mut', conversationId: 'conv_dur_mut' });
+    const sendRec = await service.submitCommand(sendCmd);
+    sendRec.state = 'COMMITTED';
+    sendRec.committedAt = Date.now();
+    sendRec.commitProofLevel = 'STRONG_COMMIT';
+    sendRec.nativeMessageId = 'native_dur_msg_1';
+    sendRec.commitConversationId = 'conv_dur_mut';
+    await store.updateCommand(sendRec, true);
+
+    const snapshotAfterCommit = await readDurable<ProtocolStoreSnapshot>(PROTOCOL_STORE_NAME);
+    expect(snapshotAfterCommit?.recentCommittedIds).toContain(sendCmd.commandId);
+
+    // Matrix 43: real COMPLETED SEND_MESSAGE after strong commit remains represented
+    sendRec.state = 'COMPLETED';
+    sendRec.completedAt = Date.now();
+    await store.updateCommand(sendRec, true);
+
+    const snapshotAfterComplete = await readDurable<ProtocolStoreSnapshot>(PROTOCOL_STORE_NAME);
+    expect(snapshotAfterComplete?.recentCommittedIds).toContain(sendCmd.commandId);
+    expect(snapshotAfterComplete?.recentCommittedIds).not.toContain(probe.commandId);
+
+    // Matrix 44: restoreAfterFailedUpdate uses mutation-commit semantics
+    // Artificially simulate an invalid record being restored
+    const invalidRec = structuredClone(probeRec);
+    store.restoreAfterFailedUpdate(invalidRec);
+    const snapshotAfterRestore = await readDurable<ProtocolStoreSnapshot>(PROTOCOL_STORE_NAME);
+    expect(snapshotAfterRestore?.recentCommittedIds).toContain(sendCmd.commandId);
+    expect(snapshotAfterRestore?.recentCommittedIds).not.toContain(probe.commandId);
+
+    await service.stop();
+  });
+
+  it('Matrix 63-64: restart with dispatched SESSION_PROBE transitions to EXPIRED with no auto-replay', async () => {
+    // Phase 1: Service 1 runs, dispatches SESSION_PROBE, and crashes
+    const adapter1 = new FakeTransportAdapter('CONNECTED');
+    const service1 = new BrowserTransportService(adapter1, { instanceId: 'dur-restart-1' });
+    await service1.start();
+
+    const probe = service1.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_restart_probe' });
+    const probeRec = await service1.submitCommand(probe);
+    expect(probeRec.state).toBe('DISPATCHED');
+    expect(probeRec.attempts).toBe(1);
+
+    await service1.stop();
+
+    // Phase 2: Fresh service instance starts against same durable outbox
+    const adapter2 = new FakeTransportAdapter('CONNECTED');
+    const service2 = new BrowserTransportService(adapter2, { instanceId: 'dur-restart-2' });
+    await service2.start();
+
+    // Matrix 63: probe in DISPATCHED transitions to EXPIRED on restart
+    const restoredProbe = service2.getStore().get(probe.commandId);
+    expect(restoredProbe).toBeDefined();
+    expect(restoredProbe?.state).toBe('EXPIRED');
+    expect(restoredProbe?.reconciledOnRestart).toBe(true);
+
+    // Matrix 64: no automatic replay is introduced
+    expect(restoredProbe?.attempts).toBe(1);
+    expect(adapter2.sentMessages.length).toBe(0);
+
+    await service2.stop();
+  });
 });

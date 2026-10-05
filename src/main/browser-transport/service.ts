@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { TransportAdapter } from './adapter.js';
-import { ProtocolStore } from './store.js';
+import { ProtocolStore, isRealMutationCommit } from './store.js';
 import { EventDeduplicator } from './dedupe.js';
 import type { DurableCommandRecord } from './types.js';
 import {
@@ -13,7 +13,7 @@ import {
   type ProtocolCommandInputMap,
   type ProtocolCommandPayloadMap,
   type ProtocolErrorCode,
-  isValidTransition,
+  isValidCommandTransition,
   parseProtocolEvent,
   type HandshakeHello,
   type HandshakeWelcome,
@@ -21,6 +21,21 @@ import {
   ProtocolCapability
 } from '../../shared/protocol/index.js';
 import { logInfo, logWarn } from '../logger.js';
+
+function isValidProbeCompletionPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+  const keys = Object.keys(payload);
+  if (keys.length !== 1 || keys[0] !== 'observedTabCount') {
+    return false;
+  }
+  const count = (payload as Record<string, unknown>).observedTabCount;
+  if (typeof count !== 'number' || !Number.isSafeInteger(count)) {
+    return false;
+  }
+  return count >= 0 && count <= 10000;
+}
 
 function semanticPayloadIdentity(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -310,9 +325,28 @@ export class BrowserTransportService {
       return { accepted: false, reason: 'MISSING_EMITTER_EPOCH' };
     }
 
+    if (event.eventType === 'COMMAND_COMPLETED' && record.command.commandType === 'SESSION_PROBE') {
+      const probePayload = record.command.payload as ProtocolCommandPayloadMap['SESSION_PROBE'];
+      const targetConvId = probePayload.targetConversationId ?? null;
+      const staticValid =
+        (record.state === 'DISPATCHED' || record.state === 'COMPLETED') &&
+        record.command.target === 'extension-background' &&
+        event.source === 'extension-background' &&
+        event.sessionId === record.command.sessionId &&
+        record.command.conversationId === null &&
+        targetConvId === null &&
+        event.conversationId === null &&
+        this.isReady() &&
+        isValidProbeCompletionPayload(event.payload);
+
+      if (!staticValid) {
+        this.dedupe.markProcessed(event.eventId);
+        return { accepted: false, reason: 'INVALID_LIFECYCLE_FACT' };
+      }
+    }
+
     const sourceEpoch = event.emitterEpoch ?? `legacy:${event.source}`;
-    record.activeEmitterEpochBySource ??= {};
-    const activeEmitterEpoch = record.activeEmitterEpochBySource[event.source];
+    const activeEmitterEpoch = record.activeEmitterEpochBySource?.[event.source];
     const claimedDocumentId = event.eventType === 'COMMAND_CLAIMED'
       ? (event.payload as { clientDocumentId?: string }).clientDocumentId
       : undefined;
@@ -327,14 +361,13 @@ export class BrowserTransportService {
       this.dedupe.markProcessed(event.eventId);
       return { accepted: false, reason: 'STALE_EMITTER_EPOCH' };
     }
-    if (!activeEmitterEpoch || establishesNewEmitter) {
-      record.activeEmitterEpochBySource[event.source] = sourceEpoch;
-    }
+
+    const willEstablishEmitter = !activeEmitterEpoch || establishesNewEmitter;
+    const emitterIsCurrent = willEstablishEmitter || activeEmitterEpoch === sourceEpoch;
     const priorOrdering = record.orderingBySource?.[event.source];
     const payloadIdentity = semanticPayloadIdentity(event.payload);
     const sameEmitterOrdering = priorOrdering?.emitterEpoch === sourceEpoch ||
       (priorOrdering?.emitterEpoch === undefined && sourceEpoch === `legacy:${event.source}`);
-    const emitterIsCurrent = record.activeEmitterEpochBySource[event.source] === sourceEpoch;
     const advancesOrdering = emitterIsCurrent &&
       (!priorOrdering || !sameEmitterOrdering || event.sequence > priorOrdering.sequence);
     if (priorOrdering && sameEmitterOrdering && !durableFact) {
@@ -353,6 +386,10 @@ export class BrowserTransportService {
 
     const now = Date.now();
     const before = structuredClone(record);
+    if (willEstablishEmitter) {
+      record.activeEmitterEpochBySource ??= {};
+      record.activeEmitterEpochBySource[event.source] = sourceEpoch;
+    }
     let stateChanged = false;
     let durableMutation = false;
 
@@ -484,7 +521,13 @@ export class BrowserTransportService {
       try {
         await this.store.updateCommand(record, advancesOrdering);
       } catch (err) {
+        for (const key of Object.keys(record) as (keyof DurableCommandRecord)[]) {
+          if (!Object.prototype.hasOwnProperty.call(before, key)) {
+            delete record[key];
+          }
+        }
         if (before.orderingBySource === undefined) delete record.orderingBySource;
+        if (before.activeEmitterEpochBySource === undefined) delete record.activeEmitterEpochBySource;
         Object.assign(record, before);
         this.store.restoreAfterFailedUpdate(record);
         throw err;
@@ -502,16 +545,20 @@ export class BrowserTransportService {
   public async cancelCommand(
     commandId: string,
     reason: string
-  ): Promise<{ ok: boolean; status: 'CANCELED_BEFORE_COMMIT' | 'COMMIT_ALREADY_OCCURRED' | 'NOT_FOUND' }> {
+  ): Promise<{ ok: boolean; status: 'CANCELED_BEFORE_COMMIT' | 'COMMIT_ALREADY_OCCURRED' | 'ALREADY_COMPLETED' | 'NOT_FOUND' }> {
     const record = this.store.get(commandId);
     if (!record) {
       return { ok: false, status: 'NOT_FOUND' };
     }
 
+    if (record.command.commandType === 'SESSION_PROBE' && record.state === 'COMPLETED') {
+      return { ok: false, status: 'ALREADY_COMPLETED' };
+    }
+
     record.cancellationRequested = true;
 
     // If already committed or completed, CANNOT undo side effect
-    if (record.state === 'COMMITTED' || record.state === 'COMPLETED') {
+    if (record.state === 'COMMITTED' || (record.state === 'COMPLETED' && isRealMutationCommit(record))) {
       logWarn(`protocol: command ${commandId} cannot be undone; side effect already committed`);
       await this.store.updateCommand(record, true);
       return { ok: false, status: 'COMMIT_ALREADY_OCCURRED' };
@@ -614,7 +661,7 @@ export class BrowserTransportService {
   private transitionCommand(record: DurableCommandRecord, newState: CommandState, notify = true): boolean {
     if (record.state === newState) return false;
 
-    if (!isValidTransition(record.state, newState)) {
+    if (!isValidCommandTransition(record.command.commandType, record.state, newState)) {
       logWarn(`protocol: invalid state transition from ${record.state} to ${newState} for command ${record.command.commandId}`);
       return false;
     }

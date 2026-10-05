@@ -3,6 +3,7 @@ import { FakeTransportAdapter } from '../../src/main/browser-transport/fake-adap
 import { BrowserTransportService } from '../../src/main/browser-transport/service.js';
 import { resetDurableForTests, initDurableStore } from '../../src/main/durable.js';
 import type { ProtocolEvent } from '../../src/shared/protocol/index.js';
+import type { DurableCommandRecord } from '../../src/main/browser-transport/types.js';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
@@ -404,5 +405,843 @@ describe('Kosmosyn Transport Protocol V1 - Command Lifecycle & Idempotency', () 
     await service.claimCommand(cmd.commandId, 'doc_authority');
     await service.handleEvent({ protocolVersion: 1, eventId: 'evt_authority', commandId: cmd.commandId, eventType: 'MESSAGE_COMMITTED', source: 'content-script', sessionId: 'sess_authority', conversationId: 'conv_target', generation: service.getGeneration(), sequence: 1, occurredAt: Date.now(), payload: { proofLevel: 'STRONG_COMMIT', nativeMessageId: 'native_authority', conversationId: 'conv_target', candidateCount: 1 } });
     expect(record.state).toBe('AMBIGUOUS');
+  });
+
+    // ======================================================================
+  // AMENDMENT MATRIX TESTS: Non-Mutating Completion Semantics
+  // ======================================================================
+
+  function establishReady(srv: BrowserTransportService): string {
+    const welcome = srv.handleHandshakeHello({
+      type: 'HELLO',
+      protocolVersion: 1,
+      extensionVersion: '2.1.20',
+      connectionGeneration: 1,
+      capabilities: ['SESSION_BINDING', 'SEND_MESSAGE']
+    });
+    if (welcome.type === 'WELCOME') {
+      srv.handleHandshakeReady({
+        connectionGeneration: welcome.connectionGeneration,
+        connectionEpoch: welcome.connectionEpoch
+      });
+      return welcome.connectionEpoch;
+    }
+    throw new Error('Handshake failed in test setup');
+  }
+
+  it('Matrix 1-7: SESSION_PROBE DISPATCHED + valid COMMAND_COMPLETED transitions to COMPLETED with valid non-mutating durable fields', async () => {
+    const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_matrix_1' });
+    const record = await service.submitCommand(probe);
+    expect(record.state).toBe('DISPATCHED');
+
+    const connectionEpoch = establishReady(service);
+    const completeEvent: ProtocolEvent = {
+      protocolVersion: 1,
+      eventId: 'evt_probe_mat_1',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_matrix_1',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_mat_1',
+      payload: { observedTabCount: 1 }
+    };
+
+    const res = await service.handleEvent(completeEvent);
+    expect(res.accepted).toBe(true);
+
+    // 1. Reaches COMPLETED
+    expect(record.state).toBe('COMPLETED');
+    // 2. Probe never enters COMMITTED (verified directly)
+    // 3. commitProofLevel remains null
+    expect(record.commitProofLevel).toBeNull();
+    // 4. nativeMessageId remains null
+    expect(record.nativeMessageId).toBeNull();
+    // 5. commitConversationId remains null
+    expect(record.commitConversationId).toBeNull();
+    // 6. committedAt remains null
+    expect(record.committedAt).toBeNull();
+    // 7. completedAt becomes non-null
+    expect(record.completedAt).toBeGreaterThan(0);
+    // observedTabCount is NOT persisted in record
+    expect((record as unknown as Record<string, unknown>).observedTabCount).toBeUndefined();
+  });
+
+  it('Matrix 8-9: observedTabCount=0 and bounded positive values succeed', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // observedTabCount = 0 (Matrix item 8)
+    const probe0 = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_tab_0' });
+    const rec0 = await service.submitCommand(probe0);
+    const res0 = await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_tab_0',
+      commandId: probe0.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_tab_0',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_tab_0',
+      payload: { observedTabCount: 0 }
+    });
+    expect(res0.accepted).toBe(true);
+    expect(rec0.state).toBe('COMPLETED');
+
+    // observedTabCount = 25 (Matrix item 9)
+    const probe25 = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_tab_25' });
+    const rec25 = await service.submitCommand(probe25);
+    const res25 = await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_tab_25',
+      commandId: probe25.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_tab_25',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_tab_25',
+      payload: { observedTabCount: 25 }
+    });
+    expect(res25.accepted).toBe(true);
+    expect(rec25.state).toBe('COMPLETED');
+  });
+
+  it('Matrix 10-16: invalid payloads fail with INVALID_LIFECYCLE_FACT without durable mutation', async () => {
+    const connectionEpoch = establishReady(service);
+    const invalidPayloads: Array<{ name: string; payload: unknown }> = [
+      { name: 'Matrix 10: missing payload / empty object', payload: {} },
+      { name: 'Matrix 11: negative tab count', payload: { observedTabCount: -1 } },
+      { name: 'Matrix 12: fractional tab count', payload: { observedTabCount: 1.5 } },
+      { name: 'Matrix 13: count > 10000', payload: { observedTabCount: 10001 } },
+      { name: 'Matrix 14: unsafe integer', payload: { observedTabCount: Number.MAX_SAFE_INTEGER + 10 } },
+      { name: 'Matrix 15: extra payload field', payload: { observedTabCount: 1, extra: 'forbidden' } },
+      { name: 'Matrix 16: URL/title/full-tab payload', payload: { observedTabCount: 1, url: 'https://chatgpt.com', title: 'Chat' } }
+    ];
+
+    for (const [i, item] of invalidPayloads.entries()) {
+      const { name, payload } = item;
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: `sess_invalid_${i}` });
+      const record = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: `evt_invalid_pay_${i}`,
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: `sess_invalid_${i}`,
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: `emitter_inv_${i}`,
+        payload
+      });
+      expect(res, `Failed on: ${name}`).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(record.state).toBe('DISPATCHED');
+      expect(record.completedAt).toBeNull();
+      expect(record.activeEmitterEpochBySource?.['extension-background']).toBeUndefined();
+    }
+  });
+
+  it('Matrix 17-23: static semantic admission checks fail closed', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Matrix 17: source != extension-background (e.g. content-script)
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_17' });
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_17',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'content-script',
+        sessionId: 'sess_adm_17',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_17',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 18: command target != extension-background
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_18' });
+      (probe).target = 'content-script';
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_18',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_adm_18',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_18',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 19: session mismatch
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_19' });
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_19',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_mismatched',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_19',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 20: command conversation non-null fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_20', conversationId: 'conv_forbidden' });
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_20',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_adm_20',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_20',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 21: probe targetConversationId non-null fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true, targetConversationId: 'conv_in_payload' }, { sessionId: 'sess_adm_21' });
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_21',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_adm_21',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_21',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 22: event conversation non-null fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_22' });
+      const rec = await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_22',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_adm_22',
+        conversationId: 'conv_non_null_event',
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_adm_22',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 23: command completion before READY fails
+    {
+      const unreadyAdapter = new FakeTransportAdapter('CONNECTED');
+      const unreadyService = new BrowserTransportService(unreadyAdapter, { instanceId: 'unready-1' });
+      await unreadyService.start();
+
+      const probe = unreadyService.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_adm_23' });
+      const rec = await unreadyService.submitCommand(probe);
+      // Service is NOT ready (no handshake)
+      expect(unreadyService.isReady()).toBe(false);
+
+      const res = await unreadyService.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_adm_23',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_adm_23',
+        conversationId: null,
+        generation: unreadyService.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        emitterEpoch: 'emitter_adm_23',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+      await unreadyService.stop();
+    }
+  });
+
+  it('Matrix 29-32: completion from PERSISTED, BLOCKED, EXPIRED, CANCELED fails closed', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Matrix 29: completion from PERSISTED fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_elig_29' });
+      // Put in PERSISTED by persisting without dispatching
+      const record: DurableCommandRecord = {
+        command: probe,
+        state: 'PERSISTED',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        persistedAt: Date.now(),
+        dispatchedAt: null,
+        claimedAt: null,
+        owner: null,
+        claimLeaseUntil: null,
+        committedAt: null,
+        commitProofLevel: null,
+        nativeMessageId: null,
+        commitConversationId: null,
+        completedAt: null,
+        attempts: 0,
+        lastError: null,
+        cancellationRequested: false
+      };
+      await service.getStore().persistNewCommand(record);
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_elig_29',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_elig_29',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_elig_29',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(record.state).toBe('PERSISTED');
+    }
+
+    // Matrix 30: completion from BLOCKED fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_elig_30' });
+      const rec = await service.submitCommand(probe);
+      rec.state = 'BLOCKED';
+      await service.getStore().updateCommand(rec, true);
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_elig_30',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_elig_30',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_elig_30',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('BLOCKED');
+    }
+
+    // Matrix 31: completion from EXPIRED fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_elig_31' });
+      const rec = await service.submitCommand(probe);
+      rec.state = 'EXPIRED';
+      await service.getStore().updateCommand(rec, true);
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_elig_31',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_elig_31',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_elig_31',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('EXPIRED');
+    }
+
+    // Matrix 32: completion from CANCELED fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_elig_32' });
+      const rec = await service.submitCommand(probe);
+      const cancelRes = await service.cancelCommand(probe.commandId, 'canceled before complete');
+      expect(cancelRes.status).toBe('CANCELED_BEFORE_COMMIT');
+      expect(rec.state).toBe('CANCELED');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_elig_32',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_elig_32',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_elig_32',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('CANCELED');
+    }
+  });
+
+  it('Matrix 33-37: mutating commands and other command types gain no direct completion', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Matrix 33: SEND_MESSAGE DISPATCHED -> completion without commit fails
+    {
+      const sendCmd = service.createCommand('SEND_MESSAGE', { text: 'test 33', targetConversationId: 'conv_33' }, { sessionId: 'sess_33', conversationId: 'conv_33' });
+      const rec = await service.submitCommand(sendCmd);
+      expect(rec.state).toBe('DISPATCHED');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_33_comp',
+        commandId: sendCmd.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_33',
+        conversationId: 'conv_33',
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_33',
+        payload: {}
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 34: SEND_MESSAGE EXECUTING -> completion without commit fails
+    {
+      const sendCmd = service.createCommand('SEND_MESSAGE', { text: 'test 34', targetConversationId: 'conv_34' }, { sessionId: 'sess_34', conversationId: 'conv_34' });
+      const rec = await service.submitCommand(sendCmd);
+      await service.claimCommand(sendCmd.commandId, 'doc_34');
+      await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_34_start',
+        commandId: sendCmd.commandId,
+        eventType: 'MESSAGE_SUBMIT_STARTED',
+        source: 'content-script',
+        sessionId: 'sess_34',
+        conversationId: 'conv_34',
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'doc_34',
+        payload: {}
+      });
+      expect(rec.state).toBe('EXECUTING');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_34_comp',
+        commandId: sendCmd.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'content-script',
+        sessionId: 'sess_34',
+        conversationId: 'conv_34',
+        generation: service.getGeneration(),
+        sequence: 2,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'doc_34',
+        payload: {}
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('EXECUTING');
+    }
+
+    // Matrix 35: normal strong SEND_MESSAGE commit -> completion remains green
+    {
+      const sendCmd = service.createCommand('SEND_MESSAGE', { text: 'test 35', targetConversationId: 'conv_35' }, { sessionId: 'sess_35', conversationId: 'conv_35' });
+      const rec = await service.submitCommand(sendCmd);
+      await service.claimCommand(sendCmd.commandId, 'doc_35');
+      await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_35_commit',
+        commandId: sendCmd.commandId,
+        eventType: 'MESSAGE_COMMITTED',
+        source: 'content-script',
+        sessionId: 'sess_35',
+        conversationId: 'conv_35',
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'doc_35',
+        payload: { proofLevel: 'STRONG_COMMIT', nativeMessageId: 'gpt_35', conversationId: 'conv_35', candidateCount: 1 }
+      });
+      expect(rec.state).toBe('COMMITTED');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_35_comp',
+        commandId: sendCmd.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'content-script',
+        sessionId: 'sess_35',
+        conversationId: 'conv_35',
+        generation: service.getGeneration(),
+        sequence: 2,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'doc_35',
+        payload: {}
+      });
+      expect(res.accepted).toBe(true);
+      expect(rec.state).toBe('COMPLETED');
+    }
+
+    // Matrix 36: BIND_SESSION gains no direct completion
+    {
+      const bindCmd = service.createCommand('BIND_SESSION', { targetConversationId: 'conv_36', sessionId: 'sess_bind_36', role: 'prime' }, { sessionId: 'sess_36' });
+      const rec = await service.submitCommand(bindCmd);
+      expect(rec.state).toBe('DISPATCHED');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_36_comp',
+        commandId: bindCmd.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_36',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_36',
+        payload: {}
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+
+    // Matrix 37: CANCEL_COMMAND gains no direct completion
+    {
+      const cancelCmd = service.createCommand('CANCEL_COMMAND', { targetCommandId: 'cmd_dummy', reason: 'abort' }, { sessionId: 'sess_37' });
+      const rec = await service.submitCommand(cancelCmd);
+      expect(rec.state).toBe('DISPATCHED');
+
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_37_comp',
+        commandId: cancelCmd.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_37',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_37',
+        payload: {}
+      });
+      expect(res).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(rec.state).toBe('DISPATCHED');
+    }
+  });
+
+  it('Matrix 38-40: duplicate probe completion is idempotent, emits no second notification, and malformed duplicate fails closed', async () => {
+    const connectionEpoch = establishReady(service);
+    const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_dup_probe' });
+    const record = await service.submitCommand(probe);
+
+    let stateNotifications = 0;
+    let eventNotifications = 0;
+    service.onCommandState(() => { stateNotifications++; });
+    service.onEvent(() => { eventNotifications++; });
+
+    // Initial valid completion
+    const initialRes = await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_probe_dup_1',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_dup_probe',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_dup_1',
+      payload: { observedTabCount: 1 }
+    });
+    expect(initialRes.accepted).toBe(true);
+    expect(record.state).toBe('COMPLETED');
+    expect(stateNotifications).toBe(1);
+    expect(eventNotifications).toBe(1);
+
+    // Matrix 38 & 39: duplicate valid completion is idempotent and notifies no second time
+    const dupRes = await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_probe_dup_2',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_dup_probe',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 2,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_dup_1',
+      payload: { observedTabCount: 1 }
+    });
+    expect(dupRes.accepted).toBe(false);
+    expect(dupRes.duplicate).toBe(true);
+    expect(dupRes.reason).toBe('FACT_ALREADY_APPLIED');
+    expect(stateNotifications).toBe(1); // No second state notification
+    expect(eventNotifications).toBe(1); // No second event notification
+
+    // Matrix 40: malformed duplicate does not obtain authority from terminal state
+    const malformedDup = await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_probe_dup_malformed',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_dup_probe',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 3,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_dup_1',
+      payload: { observedTabCount: -99 } // Malformed
+    });
+    expect(malformedDup).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+    expect(stateNotifications).toBe(1);
+    expect(eventNotifications).toBe(1);
+  });
+
+  it('Matrix 52-58: cancellation semantics: ALREADY_COMPLETED on completed probe with zero mutation, COMMIT_ALREADY_OCCURRED on committed send', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Matrix 52-56: cancel completed SESSION_PROBE
+    const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_cancel_probe' });
+    const record = await service.submitCommand(probe);
+
+    await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_probe_cancel_comp',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_cancel_probe',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_cancel_p',
+      payload: { observedTabCount: 3 }
+    });
+    expect(record.state).toBe('COMPLETED');
+
+    const updatedAtBefore = record.updatedAt;
+    let cancelStateNotifications = 0;
+    service.onCommandState(() => { cancelStateNotifications++; });
+
+    const cancelRes = await service.cancelCommand(probe.commandId, 'late probe cancellation');
+    // Matrix 52: returns ALREADY_COMPLETED
+    expect(cancelRes).toEqual({ ok: false, status: 'ALREADY_COMPLETED' });
+    // Matrix 53: cancellationRequested NOT changed (remains false)
+    expect(record.cancellationRequested).toBe(false);
+    // Matrix 54: lastError NOT changed (remains null)
+    expect(record.lastError).toBeNull();
+    // Matrix 55: no durable write (updatedAt unchanged)
+    expect(record.updatedAt).toBe(updatedAtBefore);
+    // Matrix 56: no state notification
+    expect(cancelStateNotifications).toBe(0);
+
+    // Matrix 57: committed SEND_MESSAGE late cancel remains COMMIT_ALREADY_OCCURRED
+    const sendCmd57 = service.createCommand('SEND_MESSAGE', { text: 'test 57', targetConversationId: 'conv_57' }, { sessionId: 'sess_57', conversationId: 'conv_57' });
+    const rec57 = await service.submitCommand(sendCmd57);
+    await service.claimCommand(sendCmd57.commandId, 'doc_57');
+    await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_57_commit',
+      commandId: sendCmd57.commandId,
+      eventType: 'MESSAGE_COMMITTED',
+      source: 'content-script',
+      sessionId: 'sess_57',
+      conversationId: 'conv_57',
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'doc_57',
+      payload: { proofLevel: 'STRONG_COMMIT', nativeMessageId: 'gpt_57', conversationId: 'conv_57', candidateCount: 1 }
+    });
+    expect(rec57.state).toBe('COMMITTED');
+    const cancelRes57 = await service.cancelCommand(sendCmd57.commandId, 'cancel 57');
+    expect(cancelRes57.status).toBe('COMMIT_ALREADY_OCCURRED');
+
+    // Matrix 58: completed SEND_MESSAGE after real commit remains COMMIT_ALREADY_OCCURRED
+    await service.handleEvent({
+      protocolVersion: 1,
+      eventId: 'evt_57_comp',
+      commandId: sendCmd57.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'content-script',
+      sessionId: 'sess_57',
+      conversationId: 'conv_57',
+      generation: service.getGeneration(),
+      sequence: 2,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'doc_57',
+      payload: {}
+    });
+    expect(rec57.state).toBe('COMPLETED');
+    const cancelRes58 = await service.cancelCommand(sendCmd57.commandId, 'cancel 58');
+    expect(cancelRes58.status).toBe('COMMIT_ALREADY_OCCURRED');
+  });
+
+  it('Matrix 59-62: cancellation races: cancel-first and completion-first orderings are deterministic', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Case A: cancel first (Matrix 59-60)
+    {
+      const probeA = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_race_a' });
+      const recA = await service.submitCommand(probeA);
+      expect(recA.state).toBe('DISPATCHED');
+
+      // Matrix 59: cancel-first reaches CANCELED
+      const cancelA = await service.cancelCommand(probeA.commandId, 'cancel first race');
+      expect(cancelA.ok).toBe(true);
+      expect(cancelA.status).toBe('CANCELED_BEFORE_COMMIT');
+      expect(recA.state).toBe('CANCELED');
+
+      // Matrix 60: later completion after cancel is rejected, no resurrection
+      const compA = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_race_a_comp',
+        commandId: probeA.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_race_a',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_race_a',
+        payload: { observedTabCount: 2 }
+      });
+      expect(compA).toEqual({ accepted: false, reason: 'INVALID_LIFECYCLE_FACT' });
+      expect(recA.state).toBe('CANCELED');
+    }
+
+    // Case B: completion first (Matrix 61-62)
+    {
+      const probeB = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_race_b' });
+      const recB = await service.submitCommand(probeB);
+      expect(recB.state).toBe('DISPATCHED');
+
+      // Matrix 61: completion-first reaches COMPLETED
+      const compB = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_race_b_comp',
+        commandId: probeB.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_race_b',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_race_b',
+        payload: { observedTabCount: 2 }
+      });
+      expect(compB.accepted).toBe(true);
+      expect(recB.state).toBe('COMPLETED');
+
+      // Matrix 62: later cancellation returns ALREADY_COMPLETED with no mutation
+      const beforeUpdatedAt = recB.updatedAt;
+      const cancelB = await service.cancelCommand(probeB.commandId, 'cancel after completion');
+      expect(cancelB).toEqual({ ok: false, status: 'ALREADY_COMPLETED' });
+      expect(recB.state).toBe('COMPLETED');
+      expect(recB.cancellationRequested).toBe(false);
+      expect(recB.lastError).toBeNull();
+      expect(recB.updatedAt).toBe(beforeUpdatedAt);
+    }
   });
 });

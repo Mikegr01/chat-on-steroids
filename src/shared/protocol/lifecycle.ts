@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { CommandType } from './commands.js';
 
 /**
  * Command Lifecycle States.
@@ -75,6 +76,23 @@ export const VALID_TRANSITIONS: Readonly<Record<CommandState, readonly CommandSt
 
 export function isValidTransition(from: CommandState, to: CommandState): boolean {
   return VALID_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * Command-aware state transition helper.
+ * Authorizes command-specific lifecycle paths without broadening the generic state machine.
+ * Specifically, returns true if isValidTransition(from, to) OR exactly:
+ * commandType === 'SESSION_PROBE' && from === 'DISPATCHED' && to === 'COMPLETED'.
+ */
+export function isValidCommandTransition(
+  commandType: CommandType,
+  from: CommandState,
+  to: CommandState
+): boolean {
+  if (isValidTransition(from, to)) {
+    return true;
+  }
+  return commandType === 'SESSION_PROBE' && from === 'DISPATCHED' && to === 'COMPLETED';
 }
 
 export function isTerminalState(state: CommandState): boolean {

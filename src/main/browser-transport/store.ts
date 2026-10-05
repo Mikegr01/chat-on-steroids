@@ -7,6 +7,24 @@ export const PROTOCOL_STORE_NAME = 'kosmosyn-transport-outbox';
 const MAX_RECENT_COMMITTED = 200;
 
 /**
+ * Single source of truth predicate for genuine external mutation commit retention.
+ * Requires accepted mutation evidence (SEND_MESSAGE, COMMITTED or COMPLETED, STRONG_COMMIT,
+ * and valid non-empty nativeMessageId and commitConversationId).
+ */
+export function isRealMutationCommit(record: DurableCommandRecord | undefined): boolean {
+  if (!record) return false;
+  return (
+    record.command.commandType === 'SEND_MESSAGE' &&
+    (record.state === 'COMMITTED' || record.state === 'COMPLETED') &&
+    record.commitProofLevel === 'STRONG_COMMIT' &&
+    typeof record.nativeMessageId === 'string' &&
+    record.nativeMessageId.trim().length > 0 &&
+    typeof record.commitConversationId === 'string' &&
+    record.commitConversationId.trim().length > 0
+  );
+}
+
+/**
  * ProtocolStore manages the durable outbox and command ledger on disk.
  * Directly reuses the battle-tested atomic persistence of `src/main/durable.ts`.
  */
@@ -61,7 +79,7 @@ export class ProtocolStore {
     record.updatedAt = Date.now();
     this.commands.set(record.command.commandId, record);
 
-    if (record.state === 'COMMITTED' || record.state === 'COMPLETED') {
+    if (isRealMutationCommit(record)) {
       if (!this.recentCommittedIds.includes(record.command.commandId)) {
         this.recentCommittedIds.push(record.command.commandId);
         if (this.recentCommittedIds.length > MAX_RECENT_COMMITTED) {
@@ -82,7 +100,7 @@ export class ProtocolStore {
     this.commands.set(record.command.commandId, record);
     this.recentCommittedIds = this.recentCommittedIds.filter((id) => {
       const current = this.commands.get(id);
-      return current?.state === 'COMMITTED' || current?.state === 'COMPLETED';
+      return isRealMutationCommit(current);
     });
     this.flushSoon();
   }

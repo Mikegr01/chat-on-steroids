@@ -162,4 +162,262 @@ describe('Kosmosyn Transport Protocol V1 - source-scoped ordering', () => {
     expect(record.state).toBe('COMMITTED');
     expect(record.nativeMessageId).toBe('native_concurrent_commit');
   });
+  // ======================================================================
+  // AMENDMENT MATRIX TESTS: Non-Mutating Completion Semantics
+  // ======================================================================
+
+  function establishReady(srv: BrowserTransportService) {
+    const welcome = srv.handleHandshakeHello({
+      type: 'HELLO',
+      protocolVersion: 1,
+      extensionVersion: '2.1.20',
+      connectionGeneration: 1,
+      capabilities: ['SESSION_BINDING']
+    });
+    if (welcome.type === 'WELCOME') {
+      srv.handleHandshakeReady({
+        connectionGeneration: welcome.connectionGeneration,
+        connectionEpoch: welcome.connectionEpoch
+      });
+      return welcome.connectionEpoch;
+    }
+    throw new Error('Handshake failed in test setup');
+  }
+
+  it('Matrix 24-28: connectionEpoch, emitterEpoch, and sequence freshness rules apply to SESSION_PROBE completion', async () => {
+    const connectionEpoch = establishReady(service);
+
+    // Matrix 24: stale connectionEpoch fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_ord_24' });
+      await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_24',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_24',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch: 'stale_epoch_uuid',
+        emitterEpoch: 'emitter_ord_24',
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'STALE_CONNECTION_EPOCH' });
+    }
+
+    // Matrix 25: missing emitterEpoch on negotiated connection fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_ord_25' });
+      await service.submitCommand(probe);
+      const res = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_25',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_25',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: undefined,
+        payload: { observedTabCount: 1 }
+      });
+      expect(res).toEqual({ accepted: false, reason: 'MISSING_EMITTER_EPOCH' });
+    }
+
+    // Matrix 26: stale emitterEpoch fails under existing source rules
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_ord_26' });
+      await service.submitCommand(probe);
+      // Establish active emitter for extension-background
+      const first = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_26_first',
+        commandId: probe.commandId,
+        eventType: 'TURN_STARTED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_26',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 1,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_initial',
+        payload: {}
+      });
+      expect(first.accepted).toBe(true);
+
+      // Now a different emitter tries to complete
+      const staleEmitterRes = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_26_stale',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_26',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 2,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_different',
+        payload: { observedTabCount: 1 }
+      });
+      expect(staleEmitterRes).toEqual({ accepted: false, reason: 'STALE_EMITTER_EPOCH' });
+    }
+
+    // Matrix 27: lower sequence fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_ord_27' });
+      await service.submitCommand(probe);
+      await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_27_progress',
+        commandId: probe.commandId,
+        eventType: 'TURN_STARTED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_27',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 5,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_seq',
+        payload: {}
+      });
+
+      // Lower sequence 4 tries to complete
+      const lowerRes = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_27_lower',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_27',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 4,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_seq',
+        payload: { observedTabCount: 1 }
+      });
+      expect(lowerRes).toEqual({ accepted: false, reason: 'LOWER_SEQUENCE' });
+    }
+
+    // Matrix 28: sequence collision fails
+    {
+      const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_ord_28' });
+      await service.submitCommand(probe);
+      await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_28_progress',
+        commandId: probe.commandId,
+        eventType: 'TURN_STARTED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_28',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 3,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_coll',
+        payload: {}
+      });
+
+      // Sequence collision (same sequence 3, different event type/payload)
+      const collRes = await service.handleEvent({
+        protocolVersion: 1,
+        eventId: 'evt_ord_28_coll',
+        commandId: probe.commandId,
+        eventType: 'COMMAND_COMPLETED',
+        source: 'extension-background',
+        sessionId: 'sess_ord_28',
+        conversationId: null,
+        generation: service.getGeneration(),
+        sequence: 3,
+        occurredAt: Date.now(),
+        connectionEpoch,
+        emitterEpoch: 'emitter_coll',
+        payload: { observedTabCount: 1 }
+      });
+      expect(collRes).toEqual({ accepted: false, reason: 'SEQUENCE_COLLISION' });
+    }
+  });
+
+  it('Matrix 45-51: failed durable probe completion rolls back state, ordering, preserves dedupe retryability, and emits no listeners', async () => {
+    const connectionEpoch = establishReady(service);
+    const probe = service.createCommand('SESSION_PROBE', { probeTabs: true }, { sessionId: 'sess_rollback_probe' });
+    const record = await service.submitCommand(probe);
+    expect(record.state).toBe('DISPATCHED');
+
+    const store = service.getStore();
+    const originalFlush = store.flushImmediate.bind(store);
+    let failFlush = true;
+    store.flushImmediate = async () => {
+      if (failFlush) {
+        failFlush = false;
+        throw new Error('injected durable probe completion failure');
+      }
+      return originalFlush();
+    };
+
+    let stateNotifications = 0;
+    let eventNotifications = 0;
+    service.onCommandState(() => { stateNotifications++; });
+    service.onEvent(() => { eventNotifications++; });
+
+    const completionEvent: ProtocolEvent = {
+      protocolVersion: 1,
+      eventId: 'evt_probe_rollback_1',
+      commandId: probe.commandId,
+      eventType: 'COMMAND_COMPLETED',
+      source: 'extension-background',
+      sessionId: 'sess_rollback_probe',
+      conversationId: null,
+      generation: service.getGeneration(),
+      sequence: 1,
+      occurredAt: Date.now(),
+      connectionEpoch,
+      emitterEpoch: 'emitter_rb',
+      payload: { observedTabCount: 5 }
+    };
+
+    // Durable update throws:
+    await expect(service.handleEvent(completionEvent)).rejects.toThrow('injected durable probe completion failure');
+
+    // Matrix 45: failed durable probe completion rolls state back
+    expect(record.state).toBe('DISPATCHED');
+    expect(record.completedAt).toBeNull();
+
+    // Matrix 46: failed durable completion rolls ordering back
+    expect(record.orderingBySource?.['extension-background']).toBeUndefined();
+    expect(record.activeEmitterEpochBySource?.['extension-background']).toBeUndefined();
+
+    // Matrix 47: failed durable completion restores mutation index coherently
+    const recentIds = (store as unknown as { recentCommittedIds: string[] }).recentCommittedIds;
+    expect(recentIds).not.toContain(probe.commandId);
+
+    // Matrix 48: failed durable completion does not consume delivery dedupe (event remains retryable)
+    // Matrix 49: failed durable completion emits no event notification
+    expect(eventNotifications).toBe(0);
+    // Matrix 50: failed durable completion emits no state notification
+    expect(stateNotifications).toBe(0);
+
+    // Matrix 51: retry of same event after persistence failure can succeed
+    const retryRes = await service.handleEvent(completionEvent);
+    expect(retryRes.accepted).toBe(true);
+    expect(record.state).toBe('COMPLETED');
+    expect(record.completedAt).toBeGreaterThan(0);
+    expect(record.activeEmitterEpochBySource?.['extension-background']).toBe('emitter_rb');
+    expect(record.orderingBySource?.['extension-background']?.sequence).toBe(1);
+    expect(stateNotifications).toBe(1);
+    expect(eventNotifications).toBe(1);
+  });
 });

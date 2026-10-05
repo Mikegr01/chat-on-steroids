@@ -159,6 +159,24 @@ stateDiagram-v2
 - **`COMPLETED`**: All post-conditions and terminal verification satisfied.
 - **`AMBIGUOUS`**: Mutation dispatched, but success or failure cannot be definitively verified. **Auto-replay strictly forbidden.** Requires state reconciliation.
 
+### 4.1 Command-Class-Specific Lifecycle Semantics
+Protocol V1 defines strict, command-class-specific success pathways. Generic direct transitions from `DISPATCHED` to `COMPLETED` remain disallowed to protect mutating operations:
+
+1. **Mutating Commands (`SEND_MESSAGE`)**:
+   ```
+   PERSISTED → DISPATCHED → CLAIMED → EXECUTING → COMMITTED → COMPLETED
+   ```
+   Requires verifiable, externalized physical mutation proof (`MESSAGE_COMMITTED` with `STRONG_COMMIT`, non-empty `nativeMessageId`, and conversation coherence) before entering `COMMITTED`. Direct completion from `DISPATCHED` or `EXECUTING` without commit proof is strictly forbidden (`INVALID_LIFECYCLE_FACT`).
+
+2. **Read-Only Commands (`SESSION_PROBE`)**:
+   ```
+   PERSISTED → DISPATCHED → COMPLETED
+   ```
+   Passive state and tab inspection commands do not alter external application state and must not manufacture synthetic claims or commit facts (`COMMAND_CLAIMED`, `MESSAGE_COMMITTED`, `COMMITTED`, `STRONG_COMMIT`, `nativeMessageId`, `commitConversationId`).
+   - **`COMPLETED != COMMITTED`**: For read-only commands, reaching `COMPLETED` signifies that probe observation succeeded. The command record transitions directly `DISPATCHED → COMPLETED` upon receipt of a validated `COMMAND_COMPLETED` carrying strictly `{ observedTabCount: number }` (bounded between 0 and 10,000). Commit evidence fields (`committedAt`, `commitProofLevel`, `nativeMessageId`, `commitConversationId`) remain permanently `null`.
+   - **Mutation Truth Retention**: `ProtocolStore.recentCommittedIds` retains proven external mutation commits only. Completed `SESSION_PROBE` records are never indexed in `recentCommittedIds`.
+   - **Terminal Cancellation**: Late cancellation of a `COMPLETED` `SESSION_PROBE` returns `ALREADY_COMPLETED` as a pure terminal no-op: no state change, no error record, no disk write, and no event/state notification. In contrast, late cancellation of commands that crossed mutation commit truth returns `COMMIT_ALREADY_OCCURRED`.
+
 ---
 
 ## 5. Commit Semantics & Ambiguity Handling
