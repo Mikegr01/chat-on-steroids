@@ -402,7 +402,7 @@ beforeEach(async () => {
 // ------------------------------------------------------------------ origin
 
 describe('S4 protected sidecar routes', () => {
-  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'])(
+  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events', '/protocol/claim'])(
     '%s preserves bearer, Origin, compatibility and body-cap fences', async route => {
       await pair();
       expect((await request('POST', route, { body: {}, auth: null })).status).toBe(401);
@@ -412,7 +412,7 @@ describe('S4 protected sidecar routes', () => {
       expect((await request('POST', route, { raw: 'x'.repeat(5 * 1024 * 1024) })).status).toBe(413);
       expect((await request('GET', route)).status).toBe(404);
     });
-  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'])(
+  it.each(['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events', '/protocol/claim'])(
     'recognizes %s behind authentication even when the explicit canary is disabled', async route => {
       await pair();
       const reply = await request('POST', route, { body: {} });
@@ -507,6 +507,72 @@ describe('S4 protected sidecar routes', () => {
       const closed = once(socket, 'close'); socket.close(); await closed;
       input.resetInputForTests(); await writeDurableNow('session-input', []);
     }
+  });
+});
+
+describe('S6 cross-transport preflight and exclusive sidecar owner', () => {
+  it('observes the prior-enqueued legacy claim, fences later claim/authorization, and preserves unrelated delivery', async () => {
+    await pair();
+    const input = await import('../src/main/session/input.js'), durable = await import('../src/main/durable.js');
+    const { runS6Canary, runS4Canary } = await import('../src/main/bridge.js');
+    const { s6TargetHeld } = await import('../src/main/browser-transport/s6-canary.js');
+    const wakeModule = await import('../src/main/browser-wake.js');
+    input.resetInputForTests(); await writeDurableNow('session-input', []);
+    const target = randomUUID(), unrelated = randomUUID();
+    const session = await createSession({ conversationId: target }), other = await createSession({ conversationId: unrelated });
+    const root = await input.enqueueInput({ id: randomUUID(), sessionId: session.id, text: 'fixture preceding claim',
+      mode: 'auto', dueAt: Date.now(), model: null, reasoningEffort: null });
+    const otherRow = await input.enqueueInput({ id: randomUUID(), sessionId: other.id, text: 'fixture unrelated claim',
+      mode: 'auto', dueAt: Date.now(), model: null, reasoningEffort: null });
+    let entered!: () => void, release!: () => void;
+    const entering = new Promise<void>(resolve => { entered = resolve; }), blocked = new Promise<void>(resolve => { release = resolve; });
+    const original = durable.writeDurableNow;
+    const before = await readDurable('kosmosyn-transport-outbox');
+    const disk = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+      if (name === 'session-input' && Array.isArray(value) && value.some(row => row.id === root.id && row.state === 'browser')) {
+        entered(); await blocked;
+      }
+      return original(name, value);
+    });
+    const wake = vi.spyOn(wakeModule, 'wakeBrowserWork');
+    try {
+      // This HTTP route has already passed its final fence and entered input's private serializer.
+      const prior = request('POST', '/input/claim', { body: { id: root.id, owner: 'legacy-prior', conversationId: target, requiresAuthorization: true } });
+      await entering;
+      const s6 = runS6Canary({ enabled: true, targetConversationId: target });
+      expect(s6TargetHeld(target)).toBe(true); expect(s6TargetHeld(unrelated)).toBe(false);
+      expect((await request('POST', '/input/claim', { body: { id: root.id, owner: 'legacy-later', conversationId: target } })).body).toEqual({ input: null });
+      expect((await request('POST', '/input/claim', { body: { id: root.id, owner: 'legacy-prior', conversationId: target, authorize: true } })).body).toEqual({ ok: false });
+      const otherClaim = request('POST', '/input/claim', { body: { id: otherRow.id, owner: 'legacy-unrelated', conversationId: unrelated } });
+      release(); expect((await prior).body.input).toMatchObject({ id: root.id, owner: 'legacy-prior' });
+      expect(await s6).toEqual({ ok: false, failureCode: 'CONVERSATION_BUSY' });
+      expect((await otherClaim).body.input).toMatchObject({ id: otherRow.id, owner: 'legacy-unrelated' });
+      expect((await input.listInputs()).find(row => row.id === root.id)?.state).toBe('browser');
+      expect(await readDurable('kosmosyn-transport-outbox')).toEqual(before);
+      expect(wake.mock.calls.some(([topic]) => topic === 'protocol-s6-canary')).toBe(false);
+      expect(s6TargetHeld(target)).toBe(false);
+      disk.mockRestore();
+      input.resetInputForTests(); await writeDurableNow('session-input', []);
+      wake.mockClear();
+      const holding = runS6Canary({ enabled: true, targetConversationId: target });
+      await vi.waitFor(() => expect(wake.mock.calls.some(([topic]) => topic === 'protocol-s6-canary')).toBe(true));
+      expect(await runS4Canary({ enabled: true })).toMatchObject({ failureCode: 'BUSY' });
+      expect((await request('POST', '/protocol/hello', { body: { emitterEpoch: 'stale_s4_background', hello: {
+        type: 'HELLO', protocolVersion: 1, extensionVersion: APP_VERSION, capabilities: [], connectionGeneration: 0 } } })).status).toBe(409);
+      resetBridgeForTests(); expect(await holding).toMatchObject({ ok: false });
+      expect(s6TargetHeld(target)).toBe(false);
+    } finally {
+      release(); disk.mockRestore(); wake.mockRestore(); resetBridgeForTests();
+      input.resetInputForTests(); await writeDurableNow('session-input', []);
+    }
+  });
+  it('S4 owner rejects S6 and exposes no claim route', async () => {
+    await pair();
+    const { runS4Canary, runS6Canary } = await import('../src/main/bridge.js');
+    const s4 = runS4Canary({ enabled: true, handshakeTimeoutMs: 100 });
+    expect(await runS6Canary({ enabled: true, targetConversationId: randomUUID() })).toMatchObject({ failureCode: 'BUSY' });
+    expect((await request('POST', '/protocol/claim', { body: {} })).status).toBe(404);
+    await s4;
   });
 });
 

@@ -3,6 +3,7 @@ import type { TransportAdapter } from './adapter.js';
 import { ProtocolStore, isRealMutationCommit } from './store.js';
 import { EventDeduplicator } from './dedupe.js';
 import type { DurableCommandRecord } from './types.js';
+import { CurrentBridgeAdapter, S6_KEY, isS6Specimen } from './current-bridge-adapter.js';
 import {
   PROTOCOL_VERSION,
   protocolCommandPayloadSchema,
@@ -51,6 +52,15 @@ export interface ServiceOptions {
   maxRecentEvents?: number;
 }
 
+export interface S6Election {
+  tabId: number; documentId: string; navigationEpoch: number; targetConversationId: string; commandId: string;
+}
+export interface S6Authority {
+  commandId: string; targetConversationId: string; connectionEpoch: string; generation: number;
+  backgroundEmitterEpoch: string; current(): boolean;
+}
+export type S6ClaimContext = Pick<S6Authority, 'connectionEpoch' | 'generation' | 'backgroundEmitterEpoch'>;
+
 /**
  * BrowserTransportService.
  *
@@ -71,6 +81,69 @@ export class BrowserTransportService {
   private eventListeners: Set<(event: ProtocolEvent) => void> = new Set();
   private commandStateListeners: Set<(record: DurableCommandRecord) => void> = new Set();
   private eventHandling: Promise<void> = Promise.resolve();
+  private s6: (S6Authority & { election: S6Election | null; published: boolean }) | null = null;
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.eventHandling.then(operation);
+    this.eventHandling = result.then(() => undefined, () => undefined);
+    return result;
+  }
+  private restoreRecord(record: DurableCommandRecord, before: DurableCommandRecord): void {
+    for (const key of Object.keys(record) as (keyof DurableCommandRecord)[]) {
+      if (!Object.prototype.hasOwnProperty.call(before, key)) delete record[key];
+    }
+    Object.assign(record, before); this.store.restoreAfterFailedUpdate(record);
+  }
+  public registerS6(authority: S6Authority): void { this.s6 = { ...authority, election: null, published: false }; }
+  public publishS6(commandId: string, publish: () => void): Promise<boolean> {
+    return this.serialize(async () => {
+      const a = this.s6, r = this.store.get(commandId);
+      if (!a || !r || a.published || a.commandId !== commandId || !isS6Specimen(r.command) ||
+          r.command.conversationId !== a.targetConversationId || r.state !== 'DISPATCHED' || r.cancellationRequested ||
+          Date.now() >= r.command.expiresAt || a.connectionEpoch !== this.currentConnectionEpoch ||
+          a.generation !== this.currentGeneration || !this.isReady() || !this.negotiatedCapabilities.has('SEND_MESSAGE') || !a.current()) return false;
+      a.published = true; publish(); return true;
+    });
+  }
+  private s6Current(record: DurableCommandRecord): boolean {
+    const a = this.s6;
+    return !!a && a.published && isS6Specimen(record.command) && a.commandId === record.command.commandId &&
+      a.targetConversationId === record.command.conversationId && a.connectionEpoch === this.currentConnectionEpoch &&
+      a.generation === this.currentGeneration && this.isReady() && this.negotiatedCapabilities.has(ProtocolCapability.SEND_MESSAGE) && a.current();
+  }
+  public electS6(election: S6Election): Promise<boolean> {
+    return this.serialize(async () => {
+      const record = this.store.get(election.commandId);
+      if (!record || !this.s6Current(record) || record.state !== 'DISPATCHED' ||
+          Date.now() >= record.command.expiresAt || !this.s6 || this.s6.election ||
+          election.targetConversationId !== record.command.conversationId ||
+          !Number.isSafeInteger(election.tabId) || election.tabId < 0 || !Number.isSafeInteger(election.navigationEpoch) ||
+          election.navigationEpoch < 0 || typeof election.documentId !== 'string' ||
+          election.documentId.length < 1 || election.documentId.length > 128) return false;
+      this.s6.election = { ...election }; return true;
+    });
+  }
+  public verifyS6(commandId: string, election: S6Election): Promise<boolean> {
+    return this.serialize(async () => {
+      const r = this.store.get(commandId);
+      return !!r && this.s6Current(r) && this.matchesS6Election(election) && r.owner === election.documentId &&
+        r.state === 'EXECUTING' && !r.cancellationRequested && Date.now() < r.command.expiresAt &&
+        r.claimLeaseUntil !== null && Date.now() < r.claimLeaseUntil;
+    });
+  }
+  private matchesS6Election(election: S6Election | undefined): boolean {
+    const frozen = this.s6?.election;
+    return !!frozen && !!election && Object.keys(frozen).every(key =>
+      frozen[key as keyof S6Election] === election[key as keyof S6Election]);
+  }
+  private matchesS6Context(context: S6ClaimContext | undefined): boolean {
+    return !!context && !!this.s6 && context.connectionEpoch === this.s6.connectionEpoch &&
+      context.generation === this.s6.generation && context.backgroundEmitterEpoch === this.s6.backgroundEmitterEpoch;
+  }
+  /** Sequential sidecar reuse must not overwrite a specimen written by another owner. */
+  public refreshDurableStore(): Promise<void> {
+    return this.serialize(async () => { await this.store.load(); await this.reconcileOnRestartSerialized(); });
+  }
   // Count evidence is transient. Keep collision detection without storing the
   // completion payload (or a brute-forceable count digest) in ordering metadata.
   private readonly probeOrderingKey = randomUUID();
@@ -159,6 +232,13 @@ export class BrowserTransportService {
    * Atomic commit barrier: Command is durable BEFORE wire transmission.
    */
   public async submitCommand<T>(command: ProtocolCommand<T>): Promise<DurableCommandRecord> {
+    if (command.idempotencyKey === S6_KEY) {
+      if (!isS6Specimen(command as ProtocolCommand)) throw new Error('INVALID_S6_SPECIMEN');
+      return this.serialize(() => this.submitCommandSerialized(command));
+    }
+    return this.submitCommandSerialized(command);
+  }
+  private async submitCommandSerialized<T>(command: ProtocolCommand<T>): Promise<DurableCommandRecord> {
     // 1. Idempotency check: see if a command with this key already exists
     const existing = this.store.findByIdempotencyKey(command.idempotencyKey);
     if (existing) {
@@ -203,7 +283,7 @@ export class BrowserTransportService {
     this.notifyCommandState(record);
 
     // 3. Attempt dispatch
-    await this.dispatchRecord(record);
+    await this.dispatchRecordSerialized(record);
     return record;
   }
 
@@ -211,13 +291,17 @@ export class BrowserTransportService {
    * Dispatches an already-persisted command to the active transport.
    */
   public async dispatchRecord(record: DurableCommandRecord): Promise<boolean> {
+    if (record.command.idempotencyKey === S6_KEY) return this.serialize(() => this.dispatchRecordSerialized(record));
+    return this.dispatchRecordSerialized(record);
+  }
+  private async dispatchRecordSerialized(record: DurableCommandRecord): Promise<boolean> {
     if (record.state !== 'PERSISTED' && record.state !== 'BLOCKED') {
       logWarn(`protocol: cannot dispatch command ${record.command.commandId} from state ${record.state}`);
       return false;
     }
 
     // Capability gate: ensure peer supports required capability if handshake capabilities have been negotiated
-    if (this.negotiatedCapabilities.size > 0) {
+    if (this.currentConnectionEpoch !== null) {
       const requiredCapability = this.getRequiredCapability(record.command.commandType);
       if (requiredCapability && !this.negotiatedCapabilities.has(requiredCapability)) {
         logWarn(`protocol: command ${record.command.commandId} requires unavailable capability ${requiredCapability}`);
@@ -228,6 +312,7 @@ export class BrowserTransportService {
       }
     }
 
+    const before = structuredClone(record);
     record.attempts++;
     record.dispatchedAt = Date.now();
 
@@ -237,13 +322,18 @@ export class BrowserTransportService {
     });
 
     if (sent) {
-      this.transitionCommand(record, 'DISPATCHED');
+      this.transitionCommand(record, 'DISPATCHED', record.command.idempotencyKey !== S6_KEY);
     } else {
       logWarn(`protocol: transport send failed for command ${record.command.commandId}, remains in outbox`);
       // Remains in PERSISTED state for later outbox pump
     }
 
-    await this.store.updateCommand(record, true);
+    try { await this.store.updateCommand(record, true); }
+    catch (error) {
+      if (record.command.idempotencyKey === S6_KEY && this.adapter instanceof CurrentBridgeAdapter) this.adapter.retireS6(record.command.commandId);
+      this.restoreRecord(record, before); throw error;
+    }
+    if (record.command.idempotencyKey === S6_KEY && sent) this.notifyCommandState(record);
     return sent;
   }
 
@@ -253,8 +343,14 @@ export class BrowserTransportService {
   public async claimCommand(
     commandId: string,
     owner: string,
-    leaseMs = this.defaultLeaseTimeoutMs
+    leaseMs = this.defaultLeaseTimeoutMs,
+    election?: S6Election,
+    context?: S6ClaimContext
   ): Promise<{ ok: boolean; error?: ProtocolErrorCode; record?: DurableCommandRecord }> {
+    return this.serialize(() => this.claimCommandSerialized(commandId, owner, leaseMs, election, context));
+  }
+  private async claimCommandSerialized(commandId: string, owner: string, leaseMs: number, election?: S6Election, context?: S6ClaimContext):
+    Promise<{ ok: boolean; error?: ProtocolErrorCode; record?: DurableCommandRecord }> {
     const record = this.store.get(commandId);
     if (!record) {
       return { ok: false, error: 'COMMAND_EXPIRED' };
@@ -262,10 +358,21 @@ export class BrowserTransportService {
 
     const now = Date.now();
 
-    // Check expiration
-    if (now > record.command.expiresAt) {
-      this.transitionCommand(record, 'EXPIRED');
-      await this.store.updateCommand(record, true);
+    const strict = record.command.idempotencyKey === S6_KEY;
+    if (strict && (!this.s6Current(record) || !this.matchesS6Context(context) || !this.matchesS6Election(election) || owner !== election?.documentId))
+      return { ok: false, error: 'DUPLICATE_CLAIM', record };
+    if (strict && (record.owner !== null || record.claimedAt !== null || record.claimLeaseUntil !== null))
+      return { ok: false, error: 'DUPLICATE_CLAIM', record };
+    if (!owner || owner.length > 128 || !Number.isSafeInteger(leaseMs) || leaseMs <= 0 || (strict && leaseMs > 30000))
+      return { ok: false, error: 'COMMAND_EXPIRED', record };
+    if (now >= record.command.expiresAt) {
+      if (!strict && isValidCommandTransition(record.command.commandType, record.state, 'EXPIRED')) {
+        const before = structuredClone(record);
+        this.transitionCommand(record, 'EXPIRED', false);
+        try { await this.store.updateCommand(record, true); }
+        catch (error) { this.restoreRecord(record, before); throw error; }
+        this.notifyCommandState(record);
+      }
       return { ok: false, error: 'COMMAND_EXPIRED', record };
     }
 
@@ -275,20 +382,31 @@ export class BrowserTransportService {
       return { ok: false, error: 'DUPLICATE_CLAIM', record };
     }
 
+    // Expired generic observers can rebind without inventing EXECUTING -> CLAIMED.
+    // S6 has no transfer or lease renewal branch.
+    const rebind = !strict && !!record.owner && record.claimedAt !== null && record.claimLeaseUntil !== null &&
+      record.claimLeaseUntil <= now && (record.state === 'CLAIMED' || record.state === 'EXECUTING');
+    const before = structuredClone(record);
+    if (strict && record.state !== 'DISPATCHED') return { ok: false, error: 'DUPLICATE_CLAIM', record };
+    if (!rebind && !this.transitionCommand(record, 'CLAIMED', false))
+      return { ok: false, error: 'DUPLICATE_CLAIM', record };
     record.owner = owner;
     record.claimedAt = now;
-    record.claimLeaseUntil = now + leaseMs;
-    this.transitionCommand(record, 'CLAIMED');
+    record.claimLeaseUntil = Math.min(now + leaseMs, record.command.expiresAt);
 
-    await this.store.updateCommand(record, true);
+    try { await this.store.updateCommand(record, true); }
+    catch (error) { this.restoreRecord(record, before); throw error; }
+    this.notifyCommandState(record);
+    if (strict && (!this.s6Current(record) || Date.now() >= record.command.expiresAt || Date.now() >= record.claimLeaseUntil))
+      return { ok: false, error: 'COMMAND_EXPIRED', record };
     return { ok: true, record };
   }
 
   /**
    * Ingests and processes an incoming protocol event.
    */
-  public async handleEvent(event: ProtocolEvent): Promise<{ accepted: boolean; duplicate?: boolean; reason?: string }> {
-    const result = this.eventHandling.then(() => this.handleEventSerialized(event));
+  public async handleEvent(event: ProtocolEvent, s6Evidence?: { election: S6Election; authority: S6ClaimContext }): Promise<{ accepted: boolean; duplicate?: boolean; reason?: string }> {
+    const result = this.eventHandling.then(() => this.handleEventSerialized(event, s6Evidence));
     this.eventHandling = result.then(() => undefined, () => undefined);
     return result;
   }
@@ -318,7 +436,7 @@ export class BrowserTransportService {
     return result;
   }
 
-  private async handleEventSerialized(event: ProtocolEvent): Promise<{ accepted: boolean; duplicate?: boolean; reason?: string }> {
+  private async handleEventSerialized(event: ProtocolEvent, s6Evidence?: { election: S6Election; authority: S6ClaimContext }): Promise<{ accepted: boolean; duplicate?: boolean; reason?: string }> {
     // 1. Delivery dedupe. Mark only after processing so failed durable writes remain retryable.
     if (this.dedupe.has(event.eventId)) {
       logInfo(`protocol: duplicate event ${event.eventId} dropped`);
@@ -343,6 +461,23 @@ export class BrowserTransportService {
 
     const strongCommitFact = event.eventType === 'MESSAGE_COMMITTED' &&
       (event.payload as { proofLevel?: string }).proofLevel === 'STRONG_COMMIT';
+    const strictS6 = record.command.idempotencyKey === S6_KEY;
+    if (strictS6) {
+      const frozen = this.s6?.election;
+      const p = event.payload as { clientDocumentId?: string; tabId?: number };
+      if (!isS6Specimen(record.command) || !frozen || !this.matchesS6Context(s6Evidence?.authority) ||
+          !this.matchesS6Election(s6Evidence?.election) || event.source !== 'content-script' ||
+          event.sessionId !== record.command.sessionId || event.conversationId !== record.command.conversationId ||
+          event.emitterEpoch !== frozen.documentId || record.owner !== frozen.documentId ||
+          (!strongCommitFact && (!this.s6Current(record) || event.connectionEpoch !== this.s6?.connectionEpoch ||
+            event.generation !== this.s6?.generation || record.claimLeaseUntil === null ||
+            Date.now() >= record.claimLeaseUntil || Date.now() >= record.command.expiresAt)) ||
+          (event.eventType === 'COMMAND_CLAIMED' && (record.state !== 'CLAIMED' ||
+            p.clientDocumentId !== frozen.documentId || p.tabId !== frozen.tabId)) ||
+          (event.eventType === 'MESSAGE_SUBMIT_STARTED' && record.state !== 'CLAIMED') ||
+          (!strongCommitFact && ['COMMITTED', 'COMPLETED', 'AMBIGUOUS', 'FAILED', 'EXPIRED', 'CANCELED'].includes(record.state)))
+        return { accepted: false, reason: 'INVALID_S6_AUTHORITY' };
+    }
     // Only externally provable mutation truth may bypass transport/emitter
     // freshness. COMMAND_COMPLETED is lifecycle evidence, not an immutable
     // external fact with its own independent identity.
@@ -437,7 +572,7 @@ export class BrowserTransportService {
     switch (event.eventType) {
       case 'COMMAND_CLAIMED': {
         stateChanged = this.transitionCommand(record, 'CLAIMED', false);
-        durableMutation = stateChanged;
+        durableMutation = stateChanged || strictS6;
         break;
       }
 
@@ -559,7 +694,7 @@ export class BrowserTransportService {
 
     if (durableMutation) {
       try {
-        await this.store.updateCommand(record, advancesOrdering);
+        await this.store.updateCommand(record, strictS6 || advancesOrdering);
       } catch (err) {
         for (const key of Object.keys(record) as (keyof DurableCommandRecord)[]) {
           if (!Object.prototype.hasOwnProperty.call(before, key)) {
@@ -586,6 +721,10 @@ export class BrowserTransportService {
     commandId: string,
     reason: string
   ): Promise<{ ok: boolean; status: 'CANCELED_BEFORE_COMMIT' | 'COMMIT_ALREADY_OCCURRED' | 'ALREADY_COMPLETED' | 'NOT_FOUND' }> {
+    return this.serialize(() => this.cancelCommandSerialized(commandId, reason));
+  }
+  private async cancelCommandSerialized(commandId: string, reason: string):
+    Promise<{ ok: boolean; status: 'CANCELED_BEFORE_COMMIT' | 'COMMIT_ALREADY_OCCURRED' | 'ALREADY_COMPLETED' | 'NOT_FOUND' }> {
     const record = this.store.get(commandId);
     if (!record) {
       return { ok: false, status: 'NOT_FOUND' };
@@ -595,19 +734,44 @@ export class BrowserTransportService {
       return { ok: false, status: 'ALREADY_COMPLETED' };
     }
 
+    const before = structuredClone(record);
+    if (record.command.idempotencyKey === S6_KEY && ['COMPLETED', 'AMBIGUOUS', 'FAILED', 'EXPIRED', 'CANCELED'].includes(record.state))
+      return { ok: false, status: 'ALREADY_COMPLETED' };
     record.cancellationRequested = true;
 
     // If already committed or completed, CANNOT undo side effect
     if (record.state === 'COMMITTED' || (record.state === 'COMPLETED' && isRealMutationCommit(record))) {
       logWarn(`protocol: command ${commandId} cannot be undone; side effect already committed`);
-      await this.store.updateCommand(record, true);
+      try { await this.store.updateCommand(record, true); }
+      catch (error) { this.restoreRecord(record, before); throw error; }
       return { ok: false, status: 'COMMIT_ALREADY_OCCURRED' };
     }
 
-    this.transitionCommand(record, 'CANCELED');
+    const uncertain = record.command.idempotencyKey === S6_KEY && record.state === 'EXECUTING';
+    this.transitionCommand(record, uncertain ? 'AMBIGUOUS' : 'CANCELED', false);
     record.lastError = `Canceled: ${reason}`;
-    await this.store.updateCommand(record, true);
-    return { ok: true, status: 'CANCELED_BEFORE_COMMIT' };
+    try { await this.store.updateCommand(record, true); }
+    catch (error) { this.restoreRecord(record, before); throw error; }
+    this.notifyCommandState(record);
+    return { ok: !uncertain, status: uncertain ? 'ALREADY_COMPLETED' : 'CANCELED_BEFORE_COMMIT' };
+  }
+
+  public cleanupS6(commandId: string): Promise<void> {
+    return this.serialize(async () => {
+      const r = this.store.get(commandId);
+      if (!r) return;
+      if (r.command.idempotencyKey !== S6_KEY) throw new Error('NOT_S6');
+      if (['COMMITTED', 'COMPLETED', 'AMBIGUOUS', 'FAILED', 'EXPIRED', 'CANCELED'].includes(r.state)) return;
+      const before = structuredClone(r);
+      // DISPATCHED was handed out or publication cannot be disproven. No replay.
+      // CLAIMED has not crossed durable start: revoked publication prevents insertion.
+      const next = r.state === 'EXECUTING' || r.state === 'DISPATCHED' ? 'AMBIGUOUS' : 'CANCELED';
+      if (!this.transitionCommand(r, next, false)) throw new Error('S6_CLEANUP_STATE');
+      r.cancellationRequested = true; r.lastError = 'S6 invocation retired; specimen consumed';
+      try { await this.store.updateCommand(r, true); }
+      catch (error) { this.restoreRecord(r, before); throw error; }
+      this.notifyCommandState(r);
+    });
   }
 
   /**
@@ -616,6 +780,9 @@ export class BrowserTransportService {
    * MUTATIONS WITH UNCERTAIN STATUS TRANSITION TO AMBIGUOUS. NO BLIND REPLAY!
    */
   public async reconcileOnRestart(): Promise<void> {
+    return this.serialize(() => this.reconcileOnRestartSerialized());
+  }
+  private async reconcileOnRestartSerialized(): Promise<void> {
     const unresolved = this.store.getUnresolvedCommands();
     logInfo(`protocol: reconciling ${unresolved.length} unresolved commands after startup`);
 

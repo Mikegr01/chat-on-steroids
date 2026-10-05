@@ -11,6 +11,7 @@ import { supportsFinishAutomation } from '../shared/finish.js';
 import { injectedUserMessage, recordedRequestTurn, responseTurnId, type TimelineTurns } from '../shared/chronology.js';
 import type { SessionSummary } from '../shared/session.js';
 import { publishBrowserDecision, authorizeBrowserInput, sessionInputPolicy, collectRecordedBrowserDecision, type InputActivity } from './session/input.js';
+import { S6Canary, s6TargetHeld, type S6Options, type S6Result } from './browser-transport/s6-canary.js';
 import { pluginRefreshPublications, pendingPluginRefreshes, claimPluginRefresh, requireManualPluginRefresh, completePluginRefresh, failPluginRefresh } from './plugin-refresh.js';
 import { attachBrowserWake, wakeBrowserWork } from './browser-wake.js';
 import { wakeBrowserUrl } from './browser-startup.js';
@@ -1842,13 +1843,53 @@ function chatIsWorking(conversationId: string): boolean {
 
 /** Lazily constructed sidecar; only an explicit internal invocation can create work. */
 let protocolCanary: import('./browser-transport/s4-canary.js').S4Canary | null = null;
+let protocolSidecarOwner: 'none' | 's4' | 's6' = 'none';
+let s4Invocation = false;
+let s6Canary: S6Canary | null = null;
 export async function runS4Canary(options: { enabled: boolean; handshakeTimeoutMs?: number; commandTimeoutMs?: number }): Promise<import('./browser-transport/s4-canary.js').S4Result> {
   if (options.enabled !== true) return { ok: false, failureCode: 'DISABLED' };
   if (!server || !bridgeDesiredRunning || bridgeRecovering) return { ok: false, failureCode: 'BRIDGE_UNAVAILABLE' };
+  if (protocolSidecarOwner === 's6' || s4Invocation) return { ok: false, failureCode: 'BUSY' };
+  protocolSidecarOwner = 's4'; s4Invocation = true;
   // Importing this module creates no listener, command, or startup canary.
-  const { S4Canary } = await import('./browser-transport/s4-canary.js');
-  protocolCanary ??= new S4Canary(() => wakeBrowserWork('protocol-canary'));
-  return protocolCanary.run(options);
+  try {
+    const { S4Canary } = await import('./browser-transport/s4-canary.js');
+    if (!protocolCanary) {
+      protocolCanary = new S4Canary(() => wakeBrowserWork('protocol-canary'));
+      protocolCanary.service.onCommandState(record => {
+        if (!s4Invocation && protocolSidecarOwner === 's4' && record.command.commandType === 'SESSION_PROBE' &&
+            ['COMPLETED', 'FAILED', 'EXPIRED', 'CANCELED'].includes(record.state)) protocolSidecarOwner = 'none';
+      });
+    } else if (!protocolCanary.service.getStore().getUnresolvedCommands().some(record => record.command.commandType === 'SESSION_PROBE'))
+      await protocolCanary.service.refreshDurableStore();
+    return await protocolCanary.run(options);
+  } finally {
+    s4Invocation = false;
+    if (protocolSidecarOwner === 's4' && !protocolCanary?.service.getStore().getUnresolvedCommands().some(record =>
+      record.command.commandType === 'SESSION_PROBE' && record.command.sessionId.startsWith('s4_'))) protocolSidecarOwner = 'none';
+  }
+}
+
+/** Internal opt-in source candidate. Production input routing never calls this. */
+export function runS6Canary(options: S6Options): Promise<S6Result> {
+  if (!options || options.enabled !== true) return Promise.resolve({ ok: false, failureCode: 'DISABLED' });
+  if (!server || !bridgeDesiredRunning || bridgeRecovering) return Promise.resolve({ ok: false, failureCode: 'BRIDGE_UNAVAILABLE' });
+  if (protocolSidecarOwner === 's4') return Promise.resolve({ ok: false, failureCode: 'BUSY' });
+  protocolSidecarOwner = 's6';
+  s6Canary ??= new S6Canary(() => wakeBrowserWork('protocol-s6-canary'), async target => {
+    // listInputs enters the private input serializer behind any earlier legacy claim.
+    const rows = await listInputs();
+    const session = await findSessionByConversation(target, { requireUnique: true });
+    if (!session || runningToolCalls(target) > 0 || chatIsWorking(target) || repairsInFlight.has(target)) return false;
+    // Conservative classification also rejects queued future/after-turn work. Unknown
+    // ownership/eligibility cannot become permission for the synthetic mutation.
+    return !rows.some(row => (row.conversationId === target || row.sessionId === session.id) &&
+      (['queued', 'browser', 'tool', 'decision'].includes(row.state) || row.sendAuthorizedAt !== undefined));
+  }, () => { if (protocolSidecarOwner === 's6') protocolSidecarOwner = 'none'; },
+    target => runningToolCalls(target) === 0 && !chatIsWorking(target) && !repairsInFlight.has(target));
+  return s6Canary.run(options).finally(() => {
+    if (!s6Canary?.hasCustody() && protocolSidecarOwner === 's6') protocolSidecarOwner = 'none';
+  });
 }
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1988,7 +2029,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
   if (route.startsWith('/protocol/')) {
     if (staleCompanion(req)) return json(res, 409, { error: 'stale_extension_build' }, origin);
-    if (req.method !== 'POST' || !['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events'].includes(route))
+    if (req.method !== 'POST' || !['/protocol/hello', '/protocol/ready', '/protocol/poll', '/protocol/events', '/protocol/claim'].includes(route))
       return json(res, 404, { error: 'not_found' }, origin);
     let body: unknown;
     try { body = await readBody(req); }
@@ -1996,7 +2037,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
       return json(res, 400, { error: 'bad_request' }, origin);
     }
-    const reply = protocolCanary ? await protocolCanary.request(route, body) :
+    const controller = protocolSidecarOwner === 's4' ? protocolCanary : protocolSidecarOwner === 's6' ? s6Canary : null;
+    const reply = route === '/protocol/claim' && protocolSidecarOwner === 's4' ?
+      { status: 404, body: { error: 'not_found' } } : controller ? await controller.request(route, body) :
       { status: 503, body: { error: 'protocol_canary_disabled' } };
     return json(res, reply.status, reply.body, origin);
   }
@@ -2249,9 +2292,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (deferred) changed();
       return json(res, 200, { ok: deferred }, origin);
     }
-    if (body.authorize === true) return json(res, 200, { ok: await authorizeBrowserInput(body.id, body.owner, target) }, origin);
+    if (body.authorize === true) {
+      // No await between this final process-lease fence and entering input's serializer.
+      if (s6TargetHeld(target)) return json(res, 200, { ok: false }, origin);
+      return json(res, 200, { ok: await authorizeBrowserInput(body.id, body.owner, target) }, origin);
+    }
     if (target && runningToolCalls(target) > 0) return json(res, 200, { input: null }, origin);
     if (staleCompanion(req)) return json(res, 200, { input: null }, origin);
+    if (s6TargetHeld(target)) return json(res, 200, { input: null }, origin);
     const input = await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
     if (input !== null && process.env['CLF_KOSMOSYN_SHADOW_V0'] === '1') {
       try {
@@ -5102,6 +5150,7 @@ function drainBridgeListener(instance: http.Server): Promise<void> {
 
 export async function stopBridge(): Promise<void> {
   protocolCanary?.disable();
+  s6Canary?.disable();
   if (!bridgeDesiredRunning && bridgeStopRequest) return bridgeStopRequest;
 
   // Invalidate first, before waiting in the lifecycle queue. The currently executing start sees
@@ -9668,6 +9717,7 @@ export async function unattributedIncidentsSettledForTests(): Promise<void> {
 
 export function resetBridgeForTests(): void {
   protocolCanary?.disable();
+  s6Canary?.disable();
   clearCompanionDiagnostics();
   for (const command of commands) if (command.timer) clearTimeout(command.timer);
   if (browserPresenceTimer) clearTimeout(browserPresenceTimer);

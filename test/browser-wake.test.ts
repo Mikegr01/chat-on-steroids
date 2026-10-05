@@ -24,7 +24,7 @@ describe('authenticated wake-only browser transport', () => {
     const h = await setup(), client = h.client(); await once(client, 'open');
     const initial = once(client, 'message'); client.send('paired');
     expect(String((await initial)[0])).toBe('wake');
-    for (const topic of ['protocol-canary', 'wake', 'browser-control'] as const) {
+    for (const topic of ['protocol-canary', 'protocol-s6-canary', 'wake', 'browser-control'] as const) {
       const message = once(client, 'message'); wakeBrowserWork(topic);
       expect(String((await message)[0])).toBe(topic);
     }

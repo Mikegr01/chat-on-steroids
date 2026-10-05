@@ -49,6 +49,48 @@ interface ActivityEntry {
   requestId?: string | null;
 }
 
+describe('S6 shipped runtime offer on the native DOM harness', () => {
+  it.each(['accepted', 'failed-start', 'lost-start-ack'] as const)('requires the durable start ACK and spends one native Send (%s)', async mode => {
+    const target = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', fixed = '[KOSMOSYN_S6_CANARY]';
+    let durableStart = false, clicks = 0;
+    const protocolCalls: string[] = [];
+    live = await harness(`https://chatgpt.com/c/${target}`, {
+      register_document: message => ({ ok: true, documentId: 's6_native_document', navigationEpoch: message.navigationEpoch }),
+      s6_content: message => {
+        protocolCalls.push(message.eventType || message.action);
+        if (message.action === 'claim') return { ok: true, claimLeaseUntil: (live!.window as any).Date.now() + 10000 };
+        if (message.eventType === 'MESSAGE_SUBMIT_STARTED') {
+          expect(live!.document.querySelector('#prompt-textarea')!.textContent).toBe('');
+          durableStart = mode === 'accepted';
+          return mode === 'lost-start-ack' ? null : { accepted: durableStart };
+        }
+        if (message.action === 'verify') return { ok: true };
+        if (message.eventType === 'MESSAGE_COMMITTED') expect(message.payload).toMatchObject({
+          proofLevel: 'STRONG_COMMIT', nativeMessageId: 'm-s6-native-user', conversationId: target, candidateCount: 1 });
+        return { accepted: true };
+      }
+    }, document => {
+      const button = document.querySelector('[data-testid="send-button"]')! as HTMLElement;
+      button.getClientRects = () => [{ width: 40, height: 40 }] as unknown as DOMRectList;
+      button.addEventListener('click', () => {
+        expect(durableStart).toBe(true); clicks++;
+        expect(document.querySelector('#prompt-textarea')!.textContent).toBe(fixed);
+        userTurn(document, 's6-native-user', fixed, { sent: false });
+      });
+    });
+    const epoch = live.sent.find(message => message.type === 'register_document')!.navigationEpoch;
+    const offer = { type: 'clf-s6-offer', commandId: 'cmd_s6_native', targetConversationId: target,
+      documentId: 's6_native_document', navigationEpoch: epoch, expiresAt: (live.window as any).Date.now() + 10000 };
+    expect(await live.runtimeMessage(offer)).toMatchObject({ ok: mode === 'accepted' });
+    expect(await live.runtimeMessage(offer)).toMatchObject({ ok: false });
+    expect(clicks).toBe(mode === 'accepted' ? 1 : 0);
+    if (mode !== 'accepted') {
+      expect(live.document.querySelector('#prompt-textarea')!.textContent).toBe('');
+      expect(protocolCalls).not.toContain('verify');
+    }
+  });
+});
+
 interface Descriptor {
   index: number;
   tool: string | null;

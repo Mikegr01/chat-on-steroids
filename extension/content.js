@@ -867,6 +867,7 @@
 
   function rememberUserSend() {
     if (!alive) return;
+    if (s6MutationOwned) return; // The synthetic specimen cannot acquire a Goal suffix.
     // Only the explicitly selected offline Goal backend changes the user prompt.
     const composer = CLF_DOM.composer();
     if (goalConfig?.backend === 'templates' && (goalConfig?.enabled === true || (!goalConfig?.own && !!goalConfig?.objective)) && goalConfig?.mode !== 'loop' && !desktopDecision) {
@@ -11568,6 +11569,64 @@
   let desktopDecision = null;
   let desktopDecisionSession = null;
   let desktopInputBusy = false;
+  // S6 controlled document mutation.
+  let s6SeenOffer = null;
+  let s6MutationOwned = false;
+  async function executeS6Offer(offer) {
+    if (!offer || typeof offer.commandId !== 'string' || s6SeenOffer || desktopInputBusy || !alive) return false;
+    desktopInputBusy = true; s6MutationOwned = true; s6SeenOffer = offer.commandId;
+    let started = false, committed = false, spent = false;
+    let leaseUntil = 0;
+    const fixed = '[KOSMOSYN_S6_CANARY]';
+    const current = () => alive && desktopInputBusy && s6MutationOwned && epoch === offer.navigationEpoch &&
+      CLF_DOM.conversationId() === offer.targetConversationId && Date.now() < offer.expiresAt &&
+      (!leaseUntil || Date.now() < leaseUntil);
+    const safeComposer = () => current() && !generating && !CLF_DOM.generating() && pendingTools === 0 &&
+      !CLF_DOM.securityOrAuthRequired() && CLF_DOM.composerVisible() && CLF_DOM.composerWritable() &&
+      !CLF_DOM.hasComposerAttachments();
+    const request = (action, extra = {}) => ask({ type: 's6_content', action, commandId: offer.commandId, ...extra });
+    const event = (eventType, payload = {}) => request('event', { eventType, payload });
+    try {
+      if (!safeComposer() || CLF_DOM.composer()?.textContent?.trim()) return false;
+      const claim = await request('claim');
+      if (claim?.ok !== true || !Number.isSafeInteger(claim.claimLeaseUntil) || !current()) return false;
+      leaseUntil = claim.claimLeaseUntil;
+      const registered = await documentReady;
+      if (!current() || registered?.documentId !== offer.documentId || registered?.navigationEpoch !== offer.navigationEpoch) return false;
+      if ((await event('COMMAND_CLAIMED'))?.accepted !== true || !safeComposer()) return false;
+      // EXECUTING is the durable uncertainty boundary, BEFORE any insertion.
+      if ((await event('MESSAGE_SUBMIT_STARTED'))?.accepted !== true) return false;
+      started = true;
+      if (!safeComposer() || CLF_DOM.composer()?.textContent?.trim()) return false;
+      const prior = new Set(CLF_DOM.messages().filter(row => row.role === 'user').map(row => row.id));
+      if (!CLF_DOM.insertPrompt(fixed, false) || !safeComposer() || CLF_DOM.composer()?.textContent !== fixed) return false;
+      const verified = await request('verify');
+      // The synchronous final fence and click have no intervening await.
+      const button = CLF_DOM.sendButton();
+      if (verified?.ok !== true || !safeComposer() || spent || CLF_DOM.composer()?.textContent !== fixed ||
+          !button?.isConnected || button.disabled || button.getAttribute('aria-disabled') === 'true' ||
+          button.getClientRects().length === 0) return false;
+      spent = true; button.click(); // One native attempt. No Enter or alternative path.
+      const proof = await waitPageView(() => {
+        const rows = CLF_DOM.messages().filter(row => row.role === 'user' && !prior.has(row.id) && row.text === fixed);
+        if (rows.length !== 1 || typeof rows[0].id !== 'string' || !rows[0].id.trim() || !rows[0].node?.querySelectorAll) return null;
+        const native = [rows[0].node, ...rows[0].node.querySelectorAll('[data-message-id]')]
+          .filter(node => node.getAttribute('data-message-id') === rows[0].id);
+        if (native.length !== 1) return null;
+        return { proofLevel: 'STRONG_COMMIT', nativeMessageId: rows[0].id,
+          conversationId: offer.targetConversationId, candidateCount: 1 };
+      }, current, Math.max(1, Math.min(5000, leaseUntil - Date.now())));
+      if (!proof || !current()) return false;
+      committed = (await event('MESSAGE_COMMITTED', proof))?.accepted === true;
+      return committed;
+    } catch { return false; }
+    finally {
+      try { if (started && !committed) await event('COMMAND_FAILED'); }
+      catch { /* No retry; desktop timeout keeps EXECUTING uncertainty quarantined. */ }
+      finally { s6MutationOwned = false; desktopInputBusy = false; }
+    }
+  }
+  // End S6 controlled document mutation.
   // The durable claim, never a project path/title guess, fences first tool evidence.
   let desktopProjectInput = null;
   function retireBoundProjectInput(claim, projectBound) {
@@ -12341,6 +12400,10 @@
       // revival response race against its successor even though sendToWorker() is already inert.
       if (!alive) return false;
       if (!message || typeof message.type !== 'string') return false;
+      if (message.type === 'clf-s6-offer') {
+        void executeS6Offer(message).then(ok => sendResponse({ ok })).catch(() => sendResponse({ ok: false }));
+        return true;
+      }
       // background.js uses this only to distinguish a live isolated-world recorder from the
       // dead context Chrome leaves behind when an unpacked extension is reloaded while the
       // ChatGPT document stays open. No page/session data crosses in this health check.

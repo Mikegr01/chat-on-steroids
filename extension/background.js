@@ -2481,6 +2481,157 @@ async function pumpProtocolCanary() {
   } finally { protocolCanaryFlight = false; }
 }
 // End S4 passive Protocol sidecar.
+// S6 controlled SEND_MESSAGE sidecar.
+// No persisted arm, no tab opening, and no delivery fallback after worker restart.
+let s6Arm = null;
+function s6TabCurrent(tab, source, target) {
+  return !!tab && tab.id === source.tab && !tab.pendingUrl && !tab.discarded && !tab.frozen &&
+    tab.status === 'complete' && conversationFromUrl(tab.url) === target && conversationForTab(tab) === target &&
+    Number.isSafeInteger(source.navigationEpoch) && ownsDocument(source);
+}
+function s6Elect(tabs, target) {
+  const eligible = tabs.filter(tab => s6TabCurrent(tab, { tab: tab.id,
+    documentId: tabDocuments[String(tab.id)], navigationEpoch: tabEpochs[String(tab.id)] }, target));
+  eligible.sort((a, b) => Number(!!b.active) - Number(!!a.active) ||
+    (b.lastAccessed || 0) - (a.lastAccessed || 0) || a.id - b.id);
+  const tab = eligible[0];
+  return tab ? { tabId: tab.id, documentId: tabDocuments[String(tab.id)],
+    navigationEpoch: tabEpochs[String(tab.id)], targetConversationId: target } : null;
+}
+function s6Current(flight) {
+  return !!flight && s6Arm === flight && flight.connection === wakeSocket && !disconnected &&
+    !!token && token === flight.credential;
+}
+function s6Source(flight) {
+  const e = flight.election;
+  return e ? { tab: e.tabId, documentId: e.documentId, navigationEpoch: e.navigationEpoch } : null;
+}
+function s6Authority(flight) {
+  return { emitterEpoch: protocolEmitterEpoch, connectionEpoch: flight.welcome.connectionEpoch,
+    connectionGeneration: flight.welcome.connectionGeneration };
+}
+async function s6Revalidate(flight) {
+  if (!s6Current(flight) || !flight.election || !ownsDocument(s6Source(flight))) return false;
+  const tab = await chrome.tabs.get(flight.election.tabId).catch(() => null);
+  return s6Current(flight) && s6TabCurrent(tab, s6Source(flight), flight.election.targetConversationId);
+}
+async function s6Abort(flight) {
+  if (s6Current(flight) && flight.command && flight.welcome)
+    await protocolCanaryCall('/protocol/claim', { ...s6Authority(flight), action: 'abort',
+      ...(flight.election ? { election: flight.election } : { commandId: flight.command.commandId,
+        targetConversationId: flight.command.conversationId }) }, flight.connection);
+  if (s6Arm === flight) s6Arm = null;
+}
+function validS6Command(command) {
+  const p = command?.payload;
+  return command?.protocolVersion === 1 && command.commandType === 'SEND_MESSAGE' &&
+    command.source === 'desktop-main' && command.target === 'extension-background' && command.owner === null &&
+    command.idempotencyKey === 's6_single_specimen_canary' && command.sessionId === 's6_canary' &&
+    typeof command.commandId === 'string' && command.commandId.length >= 8 && command.commandId.length <= 128 &&
+    Number.isSafeInteger(command.expiresAt) && command.expiresAt > Date.now() && !!p &&
+    Object.keys(p).length === 3 && p.text === '[KOSMOSYN_S6_CANARY]' && p.timeoutMs === 10000 &&
+    cleanConversationId(p.targetConversationId) === p.targetConversationId && p.targetConversationId === command.conversationId;
+}
+async function pumpProtocolS6(flight) {
+  if (!s6Current(flight)) return;
+  if (flight.pumping) { flight.again = true; return; }
+  flight.pumping = true;
+  try {
+    for (let pass = 0; pass < 2 && s6Current(flight); pass++) {
+      flight.again = false;
+      if (!flight.welcome) {
+        // An authenticated S6 wake always starts its own capability-bearing HELLO.
+        const welcome = await protocolCanaryCall('/protocol/hello', { emitterEpoch: protocolEmitterEpoch,
+          hello: { type: 'HELLO', protocolVersion: 1, extensionVersion: chrome.runtime.getManifest().version,
+            connectionGeneration: 0, capabilities: ['SEND_MESSAGE'] } }, flight.connection);
+        if (!s6Current(flight) || welcome?.type !== 'WELCOME' || welcome.acceptedProtocolVersion !== 1 ||
+            typeof welcome.connectionEpoch !== 'string' || welcome.connectionEpoch.length < 8 ||
+            !Number.isSafeInteger(welcome.connectionGeneration) ||
+            welcome.negotiatedCapabilities?.length !== 1 || welcome.negotiatedCapabilities[0] !== 'SEND_MESSAGE') return;
+        flight.welcome = welcome;
+        const ready = await protocolCanaryCall('/protocol/ready', { emitterEpoch: protocolEmitterEpoch,
+          ready: { type: 'READY', connectionEpoch: welcome.connectionEpoch, connectionGeneration: welcome.connectionGeneration,
+            activeSessions: [], boundTabsCount: 0 } }, flight.connection);
+        if (!s6Current(flight) || ready?.ready !== true) return;
+      }
+      const poll = await protocolCanaryCall('/protocol/poll', s6Authority(flight), flight.connection);
+      if (!s6Current(flight)) return;
+      if (poll?.command && !flight.offered) {
+        if (!validS6Command(poll.command)) return;
+        flight.command = poll.command;
+        const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+        if (!s6Current(flight)) return;
+        const election = s6Elect(tabs, poll.command.conversationId);
+        if (!election) return s6Abort(flight); // No tab creation and no automatic replacement.
+        flight.command = poll.command; flight.election = { ...election, commandId: poll.command.commandId };
+        if (!await s6Revalidate(flight) || !s6Current(flight)) return s6Abort(flight);
+        const elected = await protocolCanaryCall('/protocol/claim', { ...s6Authority(flight), action: 'elect',
+          election: flight.election }, flight.connection);
+        if (!s6Current(flight) || elected?.ok !== true) return;
+        if (!await s6Revalidate(flight) || !s6Current(flight)) return s6Abort(flight);
+        flight.offered = true; // Spend handout before the asynchronous browser call.
+        await chrome.tabs.sendMessage(election.tabId, { type: 'clf-s6-offer', ...flight.election,
+          expiresAt: poll.command.expiresAt }, { documentId: election.documentId });
+        if (!s6Current(flight)) return;
+        if (!await s6Revalidate(flight) || !s6Current(flight)) return s6Abort(flight);
+      }
+      if (!flight.again) break;
+    }
+  } catch { await s6Abort(flight); }
+  finally { flight.pumping = false; }
+}
+function armProtocolS6() {
+  if (!protocolEmitterEpoch || !wakeSocket || disconnected || !token) return;
+  if (!s6Arm || !s6Current(s6Arm)) {
+    protocolCanaryWelcome = null; protocolCanaryConnection = null;
+    s6Arm = { connection: wakeSocket, credential: token, welcome: null, election: null,
+      command: null, offered: false, claiming: false, claimed: false, sequence: 0, pumping: false, again: false };
+  }
+  void pumpProtocolS6(s6Arm).catch(() => undefined);
+}
+async function s6ContentRequest(message, sender) {
+  if (sender?.frameId !== 0 || !Number.isSafeInteger(sender?.tab?.id) || typeof sender?.documentId !== 'string') return { ok: false };
+  const flight = s6Arm, e = flight?.election;
+  // Sender identity is Chrome-derived. Content tabId/documentId fields are never forwarded.
+  if (!s6Current(flight) || !flight.offered || !e || sender.tab.id !== e.tabId || sender.documentId !== e.documentId ||
+      message.navigationEpoch !== e.navigationEpoch || message.commandId !== e.commandId) return { ok: false };
+  if (!await s6Revalidate(flight) || !s6Current(flight)) { await s6Abort(flight); return { ok: false }; }
+  const authority = s6Authority(flight);
+  if (message.action === 'claim') {
+    if (flight.claiming || flight.claimed) return { ok: false };
+    flight.claiming = true;
+    const claim = await protocolCanaryCall('/protocol/claim', { ...authority, action: 'claim', election: e }, flight.connection);
+    if (!s6Current(flight) || !await s6Revalidate(flight) || !s6Current(flight)) { await s6Abort(flight); return { ok: false }; }
+    if (claim?.ok !== true) return { ok: false };
+    flight.claimed = true; flight.claimLeaseUntil = claim.claimLeaseUntil;
+    return { ok: true, claimLeaseUntil: claim.claimLeaseUntil };
+  }
+  if (!flight.claimed || Date.now() >= flight.claimLeaseUntil || Date.now() >= flight.command.expiresAt) return { ok: false };
+  if (message.action === 'verify') {
+    const verified = await protocolCanaryCall('/protocol/claim', { ...authority, action: 'verify', election: e }, flight.connection);
+    return { ok: verified?.ok === true && await s6Revalidate(flight) && s6Current(flight) };
+  }
+  if (message.action !== 'event' || !['COMMAND_CLAIMED', 'MESSAGE_SUBMIT_STARTED', 'MESSAGE_COMMITTED', 'COMMAND_FAILED'].includes(message.eventType)) return { ok: false };
+  let payload = {};
+  if (message.eventType === 'COMMAND_CLAIMED') payload = { clientDocumentId: sender.documentId, tabId: sender.tab.id, claimedAt: Date.now() };
+  if (message.eventType === 'MESSAGE_COMMITTED') {
+    const p = message.payload;
+    if (p?.proofLevel !== 'STRONG_COMMIT' || typeof p.nativeMessageId !== 'string' || !p.nativeMessageId.trim() ||
+        p.nativeMessageId.length > 128 || p.candidateCount !== 1 || p.conversationId !== e.targetConversationId) return { ok: false };
+    payload = { proofLevel: 'STRONG_COMMIT', nativeMessageId: p.nativeMessageId, candidateCount: 1,
+      conversationId: e.targetConversationId, matchedText: '[KOSMOSYN_S6_CANARY]' };
+  }
+  if (message.eventType === 'COMMAND_FAILED') payload = { errorCode: 'UNKNOWN_ERROR', message: 'S6 document execution failed',
+    retryable: false, failedAt: Date.now() };
+  const event = { protocolVersion: 1, eventId: `evt_${crypto.randomUUID()}`, commandId: e.commandId,
+    eventType: message.eventType, source: 'content-script', sessionId: flight.command.sessionId,
+    conversationId: e.targetConversationId, generation: flight.welcome.connectionGeneration,
+    connectionEpoch: flight.welcome.connectionEpoch, emitterEpoch: sender.documentId,
+    sequence: ++flight.sequence, occurredAt: Date.now(), payload };
+  const result = await protocolCanaryCall('/protocol/events', { ...authority, election: e, event }, flight.connection);
+  return { accepted: result?.accepted === true && await s6Revalidate(flight) && s6Current(flight) };
+}
+// End S6 controlled SEND_MESSAGE sidecar.
 // MV3 service workers require static imports; import() rejects before registration.
 // Instantiate the backend only on hosts exposing Chrome's debugger API.
 // Credentials stay in call(); pages/content scripts cannot submit browser commands.
@@ -2522,6 +2673,7 @@ function connectWakeSocket() {
     if (wakeSocket !== connection) return;
     if (event.data === 'ping') connection.send('pong');
     else if (event.data === 'protocol-canary') void pumpProtocolCanary().catch(() => undefined);
+    else if (event.data === 'protocol-s6-canary') armProtocolS6();
     else if (event.data === 'browser-control') void pumpBrowserControl().catch(() => undefined);
     else if (event.data === 'wake') {
       void pumpBrowserControl().catch(() => undefined);
@@ -3257,6 +3409,7 @@ async function bindPendingInputProject(message, source, conversationId) {
 }
 
 const HANDLERS = {
+  async s6_content(message, sender) { return s6ContentRequest(message, sender); },
   async plugin_refresh(message, _sender, source) {
     if (!ownsDocument(source) || !/^[a-f0-9-]{36}$/i.test(String(message.id || ''))) return { ok: false };
     const tab = await chrome.tabs.get(source.tab);

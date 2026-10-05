@@ -746,6 +746,17 @@ function journalOf(session: FakeStorageArea): any[] {
   return Array.isArray(value) ? value : [];
 }
 
+it('a restarted shipped worker has no S6 arm and cannot claim from retained document registration', async () => {
+  const local = new FakeStorageArea({ token: 'fixture-paired', port: 8765 });
+  const session = new FakeStorageArea({ tabDocuments: { 1: 's6_document' }, tabEpochs: { 1: 3 } });
+  const fetch = vi.fn(async () => response(503, {}));
+  const worker = loadWorker({ local, session, fetch });
+  expect(await worker.send({ type: 's6_content', action: 'claim', commandId: 'cmd_s6_stale', navigationEpoch: 3 }, 1, 's6_document'))
+    .toMatchObject({ ok: false });
+  expect(fetch).not.toHaveBeenCalled(); expect(worker.tabsCreate).not.toHaveBeenCalled();
+  expect(local.data).toEqual({ token: 'fixture-paired', port: 8765 });
+});
+
 it.each(['discarded', 'frozen', 'woke', 'navigated', 'loading', 'closed', 'missing'])(
   'rechecks suspended-tab recovery at the browser action (%s)', async state => {
     const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';

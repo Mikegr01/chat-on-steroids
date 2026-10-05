@@ -112,7 +112,7 @@ interface ProtocolEvent<TPayload> {
 - `COMMAND_PERSISTED`: Desktop has atomically committed command to disk.
 - `COMMAND_DISPATCHED`: Transport accepted command for transmission.
 - `COMMAND_CLAIMED`: Target document lease acquired (`clientDocumentId`, `tabId`).
-- `MESSAGE_SUBMIT_STARTED`: Text injected, submit initiated.
+- `MESSAGE_SUBMIT_STARTED`: Durable mutation-start authority has been accepted; for S6 this event is durably acknowledged before the first prompt insertion, after which physical mutation may immediately follow. This event does not itself prove external commit.
 - `MESSAGE_COMMITTED`: Matching user message observed in DOM with verification proof level.
 - `TURN_STARTED`: ChatGPT started response generation (`Stop` button mounted).
 - `TURN_COMPLETED`: Final response completed; terminal evidence collected.
@@ -134,7 +134,7 @@ stateDiagram-v2
     DISPATCHED --> CLAIMED: Target Document Leased
     DISPATCHED --> EXPIRED: Timeout Without Claim
     DISPATCHED --> AMBIGUOUS: Transport Dropped
-    CLAIMED --> EXECUTING: Prompt Injected
+    CLAIMED --> EXECUTING: Durable Mutation Start Accepted
     CLAIMED --> FAILED: Tab Closed / Reload
     EXECUTING --> COMMITTED: Observed in DOM
     EXECUTING --> AMBIGUOUS: Unconfirmed Mutation / Post-Submit Failure
@@ -154,7 +154,7 @@ stateDiagram-v2
 - **`PERSISTED`**: Written to disk outbox via atomic rename. Proves survivability across process crash.
 - **`DISPATCHED`**: Transport layer accepted byte transmission. Proves network handover.
 - **`CLAIMED`**: Specific browser document accepted exclusive lease. Proves target ownership.
-- **`EXECUTING`**: Content script actively mutating DOM / injecting input. Post-submit failures during this state transition to `AMBIGUOUS`.
+- **`EXECUTING`**: The durable mutation-start boundary has been crossed; physical mutation may now be in progress or may immediately follow. An unproven failure or timeout after this boundary is mutation uncertainty and must fail closed as `AMBIGUOUS` (no-replay). `EXECUTING` itself is not `COMMITTED` truth.
 - **`COMMITTED`**: Irreversible side effect observed in ChatGPT conversation. Proves message is externalized. Overrides cancellation if commit is proven.
 - **`COMPLETED`**: All post-conditions and terminal verification satisfied.
 - **`AMBIGUOUS`**: Mutation dispatched, but success or failure cannot be definitively verified. **Auto-replay strictly forbidden.** Requires state reconciliation.
@@ -586,3 +586,100 @@ and native-source checks passed (730 archives/patches). Blender was not modified
 Branch/HEAD remain `custom/main` / `c3f26041d03635c0bb1901f70a97cd69ab6a5f41`, staged 0;
 the candidate is limited to `shadow.ts`, `bridge.ts`, the new S5 test and this document.
 Independent HEAD acceptance remains pending; no installed/live-browser acceptance is claimed.
+
+### S6 controlled SEND_MESSAGE implementation candidate (2026-10-05)
+
+This source/test candidate implements the independently accepted S6 design and awaits
+independent HEAD implementation review. It has no startup invocation, installed runtime
+binding or live mutation acceptance. The internal entry point requires explicit enabled
+and one existing target conversation; caller text, model, reasoning and additional options
+are rejected. The sole specimen text is `[KOSMOSYN_S6_CANARY]`, with static session
+`s6_canary` and idempotency key `s6_single_specimen_canary`.
+
+One process target lease is acquired synchronously before preflight enters the existing
+input serializer through `listInputs()`. Existing queued, claimed, send-authorized, browser,
+tool, decision or repair work vetoes admission. The final synchronous same-target checks
+at legacy claim and authorization prevent later admission while that lease is held;
+unrelated targets keep their existing behavior. A single bridge sidecar owner excludes
+S4 and S6 concurrently, including unresolved submission and failed cleanup custody.
+Sequential sidecar reuse reloads the shared durable store before writing.
+
+After HELLO, absent required capability blocks mutation even for an empty capability set.
+Pre-HELLO compatibility and S4 SESSION_PROBE remain covered. S6 requires fresh ephemeral
+SEND_MESSAGE HELLO/WELCOME/READY authority, including the background incarnation epoch.
+The wake contains only the literal `protocol-s6-canary`; worker restart retains no arm.
+
+Claims, cancellation, S6 submission/publication, events, cleanup and restart reconciliation
+share the service promise queue. Fresh claim re-reads live state and must legally enter
+CLAIMED before assigning lease fields. Its immediate durable write completes before success
+or notification; failed writes restore the exact snapshot, including deleting newly added
+fields. S6 requires current published DISPATCHED authority and the frozen document tuple,
+with no prior owner, transfer or renewal. Disable/expiry during persistence is rechecked
+before returning mutation permission. Generic expired observer rebind remains a separate
+branch restricted to a previously owned CLAIMED/EXECUTING record; terminal and ambiguous
+records cannot acquire leases. Shared Protocol schemas and transitions are unchanged.
+
+The adapter queues the exact specimen privately. Only a serialized publication step after
+durable DISPATCHED persistence can expose it through poll. Failed dispatch persistence
+restores PERSISTED truth and clears that exact adapter slot. Background queries existing
+tabs only and validates URL/conversation agreement, settled navigation, current registered
+document ownership, retirement and frozen/discarded flags. Active, lastAccessed and tab ID
+ordering elects one tuple once. One document-targeted offer uses Chrome's documentId option.
+Claim handoff derives tab/document from the top-frame runtime sender, revalidates after
+awaits and forwards the derived frozen tuple. Election loss aborts without replacement.
+
+Content acquires `desktopInputBusy` synchronously and holds it through verification,
+claim, start, insertion, Send and native evidence, releasing once in finally. Durable
+MESSAGE_SUBMIT_STARTED acceptance is mandatory before any insertion: EXECUTING now means
+mutation permission has crossed the durable uncertainty boundary and physical mutation
+may immediately follow. Failed persistence or lost start acknowledgment permits no insertion.
+Current document, target, lease, composer, tools, auth, attachments and desktop authority
+are rechecked before the single direct native Send click. A spent offer cannot retry,
+fall back to legacy or transfer across reload. Commit requires exactly one newly observed
+matching native user-message identity in that target, with candidateCount 1 and STRONG_COMMIT;
+click, clear and generation indicators cannot establish commit.
+
+Cleanup preserves COMMITTED/COMPLETED and quarantine. Known-safe unpublished PERSISTED or
+pre-start CLAIMED retirement remains consumed; DISPATCHED and EXECUTING uncertainty becomes
+AMBIGUOUS. Restart quarantines DISPATCHED/CLAIMED/EXECUTING without replay. Persistence
+failure retains exact cleanup ID, target lease and sidecar custody without timer retries.
+A later explicit invocation may reconcile but cannot create another specimen. Every prior
+specimen state permanently consumes the one-shot gate. An absent, unreadable, corrupt or
+invalid durable snapshot fails REQUIRES_HEAD_REVIEW before wake; it cannot reset the gate.
+An independently reviewed valid outbox (e.g. established by S4) is required for admission.
+Only fixed bounded payload/evidence and one retained specimen are added; no transcript,
+arbitrary prompt, media or secret is accepted as S6 data.
+
+RED evidence was captured against the baseline without deliberately breaking production:
+the initial 15 cases exited 1, including canceled/illegal-state claims returning ok=true,
+failed claim writes leaking owner/lease/state fields, HELLO [] dispatching SEND_MESSAGE,
+and missing adapter publication authority. The expanded 20-case RED exited 1: missing S6
+controller, trusted election/handoff and content execution seams exposed cross-transport,
+single-election, start/one-attempt and one-shot contracts. These missing-seam failures are
+not claims of independently observed browser mutation or generic restart defects; generic
+restart quarantine already existed. A later two-case gate RED exited 1 with
+HANDSHAKE_TIMEOUT instead of REQUIRES_HEAD_REVIEW for absent/corrupt snapshots, proving
+the pre-repair code woke before gate validation. All are now covered by deterministic GREEN.
+
+The focused harness uses isolated durable stores and controlled promise gates, shipped
+background/content code in VM fixtures, full content DOM execution, and real loopback HTTP
+legacy serializer races. These are source/harness results only. No real ChatGPT Send,
+live S6 invocation, packaging, installation, staging, commit, push, merge or S7 occurred.
+
+Fresh final candidate verification: S6 focused 103/103 (one file); Protocol 275/275
+(eight files); bridge 585/585; browser-wake 5/5; extension 263/263; content-script 773/773;
+session-input 190/190; input-delivery-integration 278/278. Every command exited 0.
+Typecheck, build and diff-check exited 0. The complete fresh `npm run verify:ci` exited 0:
+286 main files / 7178 tests passed, followed by two serialized files / 26 tests passed.
+The existing five opt-in skipped files / 51 skipped tests remain unchanged. Privacy passed
+(726 commits / 18 tags), notices passed (154 packages / 9 catalog entries), and native-source
+checks passed (730 archives/patches). No Windows UIA/Blender failure reproduced in this gate.
+An interrupted earlier CI process had no recoverable final result; it is not counted as a pass.
+Build emitted existing dynamic/static import warnings without failure; no package was created.
+
+Final source boundary: exactly 11 tracked modified files and two new S6 source/test files.
+`src/main/session/input.ts`, `src/shared/protocol/**`, Goal/Loop/ORCH and Official CoS are
+unchanged. No scope expansion or temporary task files. Branch/HEAD remain `custom/main` /
+`a29c4fde90d1609a5e3522824bc7c6288150faee`, staged 0. This is an unstaged implementation
+candidate ready for independent HEAD review; it is not implementation acceptance or live
+S6 mutation acceptance. No packaging, installation, production migration or S7.
