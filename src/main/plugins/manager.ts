@@ -17,6 +17,7 @@ import sharp from 'sharp';
 import { pluginExposure } from './exposure.js';
 import { PluginOAuth, PluginNeedsAuth, PluginOAuthSetupError, clearPluginOAuth } from './oauth.js';
 import { diagnoseBlenderHealth, type BlenderHealthReport } from './blender.js';
+import { DAVINCI_PUBLIC_TOOLS, davinciRuntimeEnvironment, parseDavinciHealthResult, validateDavinciToolSurface } from './davinci.js';
 export { PLUGIN_MAX_TOOLS, PLUGIN_MAX_SCHEMA_BYTES } from './exposure.js';
 
 interface RecordEntry extends Omit<PluginView, 'tools'> {
@@ -729,6 +730,9 @@ export class PluginManager {
           if (row.config.BLENDER_PORT) setEnvValue(env, 'BLENDER_PORT', row.config.BLENDER_PORT);
           if (row.config.BLENDER_HOST) setEnvValue(env, 'BLENDER_HOST', row.config.BLENDER_HOST);
         }
+        if (row.catalogId === 'davinci-resolve') {
+          for (const [k, v] of Object.entries(davinciRuntimeEnvironment())) setEnvValue(env, k, v);
+        }
         for (const [k, v] of Object.entries({ ...row.config, ...secrets, ...launch.env })) setEnvValue(env, k, v);
         const data = path.join(this.root, row.id, 'data');
         await fs.mkdir(data, { recursive: true });
@@ -750,6 +754,14 @@ export class PluginManager {
       }
       const tools = await this.discover(client);
       signal.throwIfAborted();
+      if (row.catalogId === 'davinci-resolve') {
+        validateDavinciToolSurface(tools.map(tool => tool.name));
+        const probe = tools.find(tool => tool.name === DAVINCI_PUBLIC_TOOLS[0]);
+        if (!probe) throw new Error('DaVinci resolve_health probe is unavailable');
+        const result = await client.callTool({ name: probe.name, arguments: {} }, { timeout: 15000, toolDefinition: probe });
+        const health = parseDavinciHealthResult(result);
+        if (!health.ready) throw new Error(`DaVinci Resolve backend ${health.code}${health.error ? `: ${health.error}` : ''}`);
+      }
       if (row.catalogId === 'blender') {
         const probe = tools.find((t) => t.name === 'get_scene_info');
         if (!probe) throw new Error('Blender scene probe is unavailable');

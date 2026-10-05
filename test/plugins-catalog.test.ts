@@ -12,8 +12,8 @@ it('uses reviewed transitional licenses only for the exact installed distributio
   expect(reviewedPluginLicense({ ...fetch.source, version: '2099.1.0' }, 'See installed dist-info licenses')).toBe('See installed dist-info licenses');
 });
 
-it('offers nine distinct reviewed recipes with packaged local artwork and curation metadata', async () => {
-  expect(pluginCatalog).toHaveLength(9);
+it('offers ten distinct reviewed recipes with packaged local artwork and curation metadata', async () => {
+  expect(pluginCatalog).toHaveLength(10);
   expect(new Set(pluginCatalog.map(recipe => recipe.id)).size).toBe(pluginCatalog.length);
   for (const recipe of pluginCatalog) {
     expect(recipe.category).toBeTruthy();
@@ -30,7 +30,7 @@ it('offers nine distinct reviewed recipes with packaged local artwork and curati
 
 it('keeps the curated catalog focused on capabilities beyond Core file and exec tools', () => {
   expect(pluginCatalog.map(recipe => recipe.id)).toEqual([
-    'blender', 'memory', 'playwright', 'chrome-devtools', 'nvidia-gpu', 'fetch', 'heygen', 'recraft', 'unity',
+    'blender', 'davinci-resolve', 'memory', 'playwright', 'chrome-devtools', 'nvidia-gpu', 'fetch', 'heygen', 'recraft', 'unity',
   ]);
   for (const recipe of pluginCatalog) {
     expect(recipe.tools?.length).toBeGreaterThan(0);
@@ -38,6 +38,35 @@ it('keeps the curated catalog focused on capabilities beyond Core file and exec 
     for (const field of recipe.fields) expect(field.secret).toBe(true);
     expect(recipe.source.args?.join(' ') ?? '').not.toMatch(/api.?key|token/i);
   }
+});
+
+it('pins the curated DaVinci Resolve adapter to dvr 1.7.0 without exposing the upstream raw MCP server', () => {
+  const resolve = pluginCatalog.find(recipe => recipe.id === 'davinci-resolve')!;
+  expect(resolve).toMatchObject({
+    name: 'DaVinci Resolve',
+    category: 'video-editing',
+    license: 'MIT',
+    tier: 'specialist',
+  });
+  expect(resolve.source).toMatchObject({
+    kind: 'python',
+    package: 'dvr',
+    version: '1.7.0',
+    command: 'cos-davinci-adapter',
+  });
+  expect(resolve.source.args ?? []).not.toEqual(expect.arrayContaining(['mcp', 'serve']));
+  expect(resolve.tools).toEqual([
+    'resolve_health',
+    'resolve_inspect',
+    'resolve_prepare_ai_timeline',
+    'resolve_import_media',
+    'resolve_assemble_rough_cut',
+    'resolve_set_marker',
+    'resolve_set_basic_clip_properties',
+    'resolve_render_review',
+    'resolve_render_status',
+    'resolve_capture_frame',
+  ]);
 });
 
 it('keeps NVIDIA GPU Monitor focused on local hardware telemetry with pinned SDK compatibility', () => {
