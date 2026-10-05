@@ -1,11 +1,31 @@
 import type { ChatObservation } from '../session/recorder.js';
 import type { TurnOutcome } from '../../shared/session.js';
 import { getConfirmedBrowserInputReceipts, type ConfirmedBrowserInputReceipt } from '../session/input.js';
+import { sendMessagePayloadSchema } from '../../shared/protocol/commands.js';
 
 export const SHADOW_V0_MAX_OBSERVATIONS = 256;
-type ShadowV0Fault = 'projector' | 'processing';
+export const SHADOW_S5_RESOLUTION_HORIZON_MS = 300000;
+type ShadowV0Fault = 'projector' | 'processing' | 's5-evaluator' | 's5-accounting';
+type ShadowS5Policy =
+  | { policyVerdict: 'WOULD_ADMIT' }
+  | { policyVerdict: 'WOULD_REJECT'; policyRejectReason: 'TEXT_OUT_OF_BOUNDS' | 'MISSING_TARGET_CONVERSATION_ID' | 'TARGET_CONVERSATION_ID_OUT_OF_BOUNDS' | 'MEDIA_NOT_REPRESENTABLE' | 'MODEL_OUT_OF_BOUNDS' | 'REASONING_EFFORT_OUT_OF_BOUNDS' }
+  | { policyVerdict: 'NOT_EVALUABLE'; policyRejectReason: 'LEGACY_DECISION_SEMANTICS_NOT_MAPPED' };
+/** Transient scalar projection of the exact successful claim; never an InputEntry reference. */
+export interface LegacyBrowserClaimPolicyInput {
+  readonly text: string;
+  readonly targetConversationId: string | null | undefined;
+  readonly purpose?: string;
+  readonly model?: string | null;
+  readonly reasoningEffort?: string | null;
+  readonly hasMedia: boolean;
+}
+type ShadowS5Claim = { kind: 'LEGACY_BROWSER_CLAIM_DECISION'; legacyInputId: string; runtimeReadiness: 'NOT_ARMED'; claimedAt: number;
+  conversationId?: never; browserDocumentId?: never } & ShadowS5Policy;
+type ShadowS5Outcome = 'CLAIMED' | 'CONFIRMED_SENT' | 'DEFERRED_OR_UNKNOWN';
+type ShadowS5Classification = 'PROVISIONAL' | 'AGREED_ADMIT' | 'LEGACY_ALLOWED_PROTOCOL_REJECTED' | 'NOT_COMPARABLE';
 type AssistantChange = 'ENTITY_CREATED' | 'LOGICAL_ALIAS_ADDED' | 'PROVIDER_ALIAS_ADDED' | 'FINALIZED' | 'TURN_ASSOCIATED';
 export type ShadowObservation =
+  | ShadowS5Claim
   | { kind: 'USER_MESSAGE_OBSERVED'; conversationId: string; nativeMessageId: string; browserDocumentId?: string; observedAt: number }
   | { kind: 'ASSISTANT_MESSAGE_OBSERVED'; conversationId: string; firstLogicalMessageId: string; observedLogicalMessageId: string; providerMessageId?: string; state: 'streaming' | 'final'; turnId?: string; changes: AssistantChange[]; eventTime: number; browserDocumentId?: string; observedAt: number }
   | { kind: 'TURN_START_OBSERVED'; conversationId: string; turnId: string; eventTime: number; browserDocumentId?: string; observedAt: number }
@@ -24,13 +44,67 @@ const counters: ShadowCounters = { admitted: 0, duplicates: 0, rejected: 0, drop
 let drainScheduled = false;
 let generation = 0;
 let testFault: ShadowV0Fault | null = null;
+// One append-only diagnostic sample. Once evidence is lost/conflicting, suppress all
+// comparisons until reset rather than guessing affected IDs or retaining another index.
+let s5EvidenceIntegrityLost = false;
+let lastShadowActivityAt = 0;
 function enabled(): boolean { return process.env['CLF_KOSMOSYN_SHADOW_V0'] === '1'; }
-function bump(counter: keyof ShadowCounters): void { if (counters[counter] < Number.MAX_SAFE_INTEGER) counters[counter] += 1; }
+function bump(counter: keyof ShadowCounters): void {
+  if (testFault === 's5-accounting') throw new Error('injected_shadow_s5_accounting_failure');
+  if (counters[counter] < Number.MAX_SAFE_INTEGER) counters[counter] += 1;
+}
 function validId(value: unknown, max = 190): value is string { return typeof value === 'string' && value.length > 0 && value.length <= max; }
 function allFacts(): ShadowObservation[] { return [...retained, ...pending]; }
 function admit(fact: ShadowObservation): void {
-  if (retained.length + pending.length >= SHADOW_V0_MAX_OBSERVATIONS) { bump('dropped'); return; }
+  if (retained.length + pending.length >= SHADOW_V0_MAX_OBSERVATIONS) { s5EvidenceIntegrityLost = true; bump('dropped'); return; }
   pending.push(fact);
+}
+
+/** Intrinsic representability only: no command allocation, runtime/capability checks or I/O. */
+export function evaluateLegacySendMessagePolicy(input: LegacyBrowserClaimPolicyInput): ShadowS5Policy {
+  if (input.purpose === 'decision') return { policyVerdict: 'NOT_EVALUABLE', policyRejectReason: 'LEGACY_DECISION_SEMANTICS_NOT_MAPPED' };
+  const fields = sendMessagePayloadSchema.shape;
+  if (!fields.text.safeParse(input.text).success) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'TEXT_OUT_OF_BOUNDS' };
+  if (input.targetConversationId == null) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'MISSING_TARGET_CONVERSATION_ID' };
+  if (!fields.targetConversationId.safeParse(input.targetConversationId).success) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'TARGET_CONVERSATION_ID_OUT_OF_BOUNDS' };
+  if (input.hasMedia) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'MEDIA_NOT_REPRESENTABLE' };
+  if (!fields.model.safeParse(input.model).success) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'MODEL_OUT_OF_BOUNDS' };
+  if (!fields.reasoningEffort.safeParse(input.reasoningEffort).success) return { policyVerdict: 'WOULD_REJECT', policyRejectReason: 'REASONING_EFFORT_OUT_OF_BOUNDS' };
+  return { policyVerdict: 'WOULD_ADMIT' };
+}
+
+/** Synchronous, bounded and disposable. No caller object or private payload is retained. */
+export function observeLegacyBrowserClaim(input: LegacyBrowserClaimPolicyInput & { readonly legacyInputId: string }): void {
+  if (!enabled()) return;
+  try {
+    lastShadowActivityAt = Date.now();
+    if (!validId(input.legacyInputId)) { bump('rejected'); return; }
+    if (allFacts().some(fact => fact.kind === 'LEGACY_BROWSER_CLAIM_DECISION' && fact.legacyInputId === input.legacyInputId)) { bump('duplicates'); return; }
+    if (retained.length + pending.length >= SHADOW_V0_MAX_OBSERVATIONS) { s5EvidenceIntegrityLost = true; bump('dropped'); return; }
+    if (testFault === 's5-evaluator') throw new Error('injected_shadow_s5_evaluator_failure');
+    const policy = evaluateLegacySendMessagePolicy(input);
+    // Account before publication: even a diagnostic accounting failure drops only the sample.
+    bump('admitted');
+    retained.push({ kind: 'LEGACY_BROWSER_CLAIM_DECISION', legacyInputId: input.legacyInputId,
+      ...policy, runtimeReadiness: 'NOT_ARMED', claimedAt: lastShadowActivityAt });
+  } catch {
+    s5EvidenceIntegrityLost = true;
+    try { noteShadowV0Failure(); } catch { /* Diagnostic accounting cannot affect delivery. */ }
+  }
+}
+
+/** Derive comparisons from the shared facts, without a second result store or per-send clock. */
+export function shadowS5SnapshotForTests(): Array<ShadowS5Claim & { legacyOutcome: ShadowS5Outcome; classification: ShadowS5Classification }> {
+  if (!enabled()) return [];
+  const facts = allFacts();
+  return retained.filter((fact): fact is ShadowS5Claim => fact.kind === 'LEGACY_BROWSER_CLAIM_DECISION').map(fact => {
+    const confirmed = facts.some(item => item.kind === 'LEGACY_INPUT_NATIVE_CORRELATED' && item.legacyInputIds.includes(fact.legacyInputId));
+    const legacyOutcome: ShadowS5Outcome = s5EvidenceIntegrityLost ? 'DEFERRED_OR_UNKNOWN' : confirmed ? 'CONFIRMED_SENT'
+      : lastShadowActivityAt - fact.claimedAt >= SHADOW_S5_RESOLUTION_HORIZON_MS ? 'DEFERRED_OR_UNKNOWN' : 'CLAIMED';
+    const classification: ShadowS5Classification = fact.policyVerdict === 'NOT_EVALUABLE' || legacyOutcome === 'DEFERRED_OR_UNKNOWN' ? 'NOT_COMPARABLE'
+      : legacyOutcome === 'CLAIMED' ? 'PROVISIONAL' : fact.policyVerdict === 'WOULD_ADMIT' ? 'AGREED_ADMIT' : 'LEGACY_ALLOWED_PROTOCOL_REJECTED';
+    return { ...fact, legacyOutcome, classification };
+  });
 }
 
 interface AssistantEntity {
@@ -101,7 +175,7 @@ function drain(expectedGeneration: number): void {
   try {
     if (testFault === 'processing') throw new Error('injected_shadow_v0_processing_failure');
     while (pending.length > 0) { retained.push(pending.shift()!); bump('admitted'); }
-  } catch { bump('failures'); pending.length = 0; }
+  } catch { s5EvidenceIntegrityLost = true; pending.length = 0; try { bump('failures'); } catch {} }
 }
 function scheduleDrain(): void {
   if (drainScheduled || pending.length === 0) return;
@@ -112,6 +186,7 @@ function scheduleDrain(): void {
 /** Passive projection of compact browser evidence outside production recorder authority. */
 export function enqueueShadowV0(conversationId: string, observations: readonly ChatObservation[]): void {
   if (!enabled()) return;
+  lastShadowActivityAt = Date.now();
   if (testFault === 'projector') throw new Error('injected_shadow_v0_projector_failure');
   for (const observation of observations) {
     if (!['user_message', 'assistant_message', 'turn_start', 'turn_end'].includes(observation.kind)) continue;
@@ -133,7 +208,7 @@ export function enqueueShadowV0(conversationId: string, observations: readonly C
   }
   scheduleDrain();
 }
-export function noteShadowV0Failure(): void { bump('failures'); }
+export function noteShadowV0Failure(): void { s5EvidenceIntegrityLost = true; bump('failures'); }
 
 let correlationInFlight: Promise<void> | null = null;
 let activeCorrelationToken: object | null = null;
@@ -147,19 +222,21 @@ export function setShadowS3ReceiptReaderForTests(reader: (() => Promise<readonly
 /** Strong Kosmosyn S3 correlation between confirmed browser InputEntry obligations and S2 native user-message observations. */
 async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserInputReceipt[]): Promise<void> {
   if (!enabled()) return;
+  lastShadowActivityAt = Date.now();
   const expectedGeneration = generation;
-  if (testFault === 'projector') throw new Error('injected_shadow_v0_projector_failure');
+  if (testFault === 'projector') { s5EvidenceIntegrityLost = true; throw new Error('injected_shadow_v0_projector_failure'); }
     let receipts: readonly ConfirmedBrowserInputReceipt[];
     try {
       receipts = explicitReceipts ?? await (receiptReaderForTests ?? getConfirmedBrowserInputReceipts)();
     } catch {
-      bump('failures');
+      if (expectedGeneration === generation) noteShadowV0Failure();
       return;
     }
 
     if (expectedGeneration !== generation) return;
 
-    if (!Array.isArray(receipts) || receipts.length === 0) return;
+    lastShadowActivityAt = Date.now();
+    if (!Array.isArray(receipts)) { s5EvidenceIntegrityLost = true; return; }
 
     const validReceipts = receipts.filter(r =>
       typeof r?.legacyInputId === 'string' && r.legacyInputId.length > 0 &&
@@ -169,6 +246,11 @@ async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserIn
       ['sent', 'cancelled', 'decision'].includes(r.deliveryState)
     );
 
+    // A later snapshot that loses any accepted positive evidence cannot reuse that
+    // retained fact to manufacture an S5 agreement. This fence changes no S3 fact.
+    for (const fact of allFacts()) if (fact.kind === 'LEGACY_INPUT_NATIVE_CORRELATED' &&
+      fact.legacyInputIds.some(id => !validReceipts.some(receipt => receipt.legacyInputId === id &&
+        receipt.conversationId === fact.conversationId && receipt.nativeMessageId === fact.nativeMessageId))) s5EvidenceIntegrityLost = true;
     if (validReceipts.length === 0) return;
 
     // Group receipts by exact native tuple: `${conversationId}:::${nativeMessageId}`
@@ -193,6 +275,7 @@ async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserIn
         const item = group[0]!;
         if (item.companionInputId) {
           // Companion relation incomplete / missing companion with same tuple
+          s5EvidenceIntegrityLost = true;
           continue;
         }
         candidates.push({
@@ -218,11 +301,13 @@ async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserIn
             });
           } else {
             // Unrelated entries sharing the same native tuple: REJECT_CONFLICT
+            s5EvidenceIntegrityLost = true;
             bump('rejected');
           }
         }
       } else {
         // More than 2 entries sharing same native tuple: REJECT_CONFLICT
+        s5EvidenceIntegrityLost = true;
         bump('rejected');
       }
     }
@@ -268,6 +353,7 @@ async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserIn
       }
 
       if (hasConflict) {
+        s5EvidenceIntegrityLost = true;
         bump('rejected');
         continue;
       }
@@ -298,6 +384,11 @@ async function executeCorrelation(explicitReceipts?: readonly ConfirmedBrowserIn
         observedAt: Date.now()
       };
 
+      // Also fence contradictions among candidates in this very pass. Existing S3
+      // admission semantics remain authoritative; S5 never promotes conflicting proof.
+      if (allFacts().some(existing => existing.kind === 'LEGACY_INPUT_NATIVE_CORRELATED' &&
+        (existing.legacyInputIds.some(id => candidate.legacyInputIds.includes(id)) ||
+          (existing.conversationId === candidate.conversationId && existing.nativeMessageId === candidate.nativeMessageId)))) s5EvidenceIntegrityLost = true;
       admit(fact);
     }
 
@@ -320,7 +411,7 @@ export function requestShadowS3Correlation(): void {
       do {
         rerunRequested = false;
         try { await executeCorrelation(); }
-        catch { bump('failures'); }
+        catch { try { noteShadowV0Failure(); } catch {} }
       } while (activeCorrelationToken === token && rerunRequested);
     } finally {
       if (activeCorrelationToken === token) {
@@ -370,4 +461,6 @@ export function resetShadowV0ForTests(): void {
   activeCorrelationToken = null;
   rerunRequested = false;
   receiptReaderForTests = null;
+  s5EvidenceIntegrityLost = false;
+  lastShadowActivityAt = 0;
 }

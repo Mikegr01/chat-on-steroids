@@ -534,3 +534,55 @@ with exactly the original 7 modified + 3 untracked candidate files. Repair edits
 to this document, `s4-canary.ts`, `service.ts`, and the S4 test file. No temporary repair files,
 staging, commit, push, merge, packaging, or installation. Source repair is ready for independent
 HEAD review; acceptance and the Git commit gate remain pending. No S5 work was started.
+
+### S5 first-slice legacy claim decision shadow (2026-10-05)
+
+The S5 implementation candidate adds a synchronous observation immediately after a successful
+legacy `/input/claim`, under `CLF_KOSMOSYN_SHADOW_V0=1`. Null claims and Shadow OFF perform no
+S5 evaluation. The bridge passes detached scalar facts from the exact returned claim, including
+its frozen delivery text and a boolean for all returned root/companion media. Both the observer
+and its bridge call contain exceptions, including failed diagnostic accounting; the legacy
+HTTP 200 `{ input }` response, outbox, retry and recovery ownership remain unchanged.
+
+The pure evaluator uses the current Protocol payload field schemas without creating a command.
+Decision/helper semantics take precedence and yield NOT_EVALUABLE. Ordinary text, target,
+media, model and reasoning checks yield WOULD_ADMIT or a bounded WOULD_REJECT reason.
+Null-target New Chat and media deliveries are meaningful hypothetical rejections. Runtime
+readiness is independently NOT_ARMED and never turns a policy admission into a rejection.
+
+One `LEGACY_BROWSER_CLAIM_DECISION` fact retains only the legacy input ID, policy verdict/reason,
+NOT_ARMED and claim time. Repeated claims deduplicate before evaluation. Final comparisons
+derive from membership in already-admitted S3 `LEGACY_INPUT_NATIVE_CORRELATED` facts; ACK,
+receipt, native ID and recorder history alone supply no positive proof. An accepted combined
+root/companion correlation resolves one root sample. S3's accepted cancelled/decision receipt
+semantics remain unchanged. Confirmed WOULD_ADMIT becomes AGREED_ADMIT; confirmed WOULD_REJECT
+becomes LEGACY_ALLOWED_PROTOCOL_REJECTED; helper or deferred evidence becomes NOT_COMPARABLE.
+Unresolved claims remain PROVISIONAL. Reject-side legacy outcomes/classifications are deferred.
+
+S5 shares the existing retained-plus-pending 256-fact envelope. It has no separate result store,
+Promise, per-send timer, retry queue or durable state. A fixed 300000ms horizon advances only
+with existing bounded Shadow/S3/claim activity; reads alone do not age claims. Valid late S3
+proof may still resolve an aged sample. Known conflicts, lost receipts, failed diagnostic
+processing or capacity loss latch one conservative integrity fence for the current append-only
+sample, suppressing all final comparisons until reset/restart. This intentionally sacrifices
+diagnostic coverage instead of guessing affected identities or trusting retained stale proof.
+Saturation remains a sampling limitation. Reset/restart drops S5 facts without replay.
+
+`test/kosmosyn-shadow-s5.test.ts` initially demonstrated six missing-seam failures (exit 1),
+then passed 52 cases. Coverage includes real legacy HTTP claim/ACK/events, exact frozen text,
+real companion media, shared bounds, privacy, lost/conflicting proof and failure isolation.
+This is source/test evidence, with independent HEAD implementation review still pending.
+No Protocol schema, capability, handshake, lifecycle, store or production transport changes.
+No staging, commit, push, merge, packaging, installation or S6 implementation is authorized.
+
+Fresh candidate verification: S5 52/52; S0-S5 plus Protocol 12 files / 341 tests;
+bridge 581/581; session-input 190/190; input-delivery-integration 278/278. All exited 0.
+Typecheck, build and diff-check exited 0. The first `verify:ci` run exited 1 with only the
+historical Blender disable-ownership 30000ms timeout; its exact independent rerun passed.
+The complete unchanged gate then exited 0: 285 main files / 7067 tests, followed by two
+serialized files / 26 tests. Existing five skipped files / 51 skipped tests are unchanged.
+Privacy passed (725 commits / 18 tags), notices passed (154 packages / 9 catalog entries),
+and native-source checks passed (730 archives/patches). Blender was not modified.
+Branch/HEAD remain `custom/main` / `c3f26041d03635c0bb1901f70a97cd69ab6a5f41`, staged 0;
+the candidate is limited to `shadow.ts`, `bridge.ts`, the new S5 test and this document.
+Independent HEAD acceptance remains pending; no installed/live-browser acceptance is claimed.

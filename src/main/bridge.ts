@@ -110,6 +110,7 @@ import {
 } from './session/recorder.js';
 import {
   enqueueShadowV0,
+  observeLegacyBrowserClaim,
   requestShadowS3Correlation,
   noteShadowV0Failure,
   observationDocumentMetadata,
@@ -2252,6 +2253,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (target && runningToolCalls(target) > 0) return json(res, 200, { input: null }, origin);
     if (staleCompanion(req)) return json(res, 200, { input: null }, origin);
     const input = await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
+    if (input !== null && process.env['CLF_KOSMOSYN_SHADOW_V0'] === '1') {
+      try {
+        observeLegacyBrowserClaim({ legacyInputId: input.id, text: input.text,
+          targetConversationId: input.conversationId, purpose: input.purpose,
+          model: input.model, reasoningEffort: input.reasoningEffort,
+          hasMedia: (input.images?.length ?? 0) > 0 || (input.attachments?.length ?? 0) > 0 });
+      } catch {
+        try { noteShadowV0Failure(); } catch { /* Shadow cannot alter the claimed input or HTTP response. */ }
+      }
+    }
     return json(res, 200, { input }, origin);
   }
 
