@@ -104,6 +104,31 @@ it('copies only non-secret Resolve scripting host variables into the native chil
   });
 });
 
+it('derives Resolve runtime paths when they are missing from the Windows launcher environment', () => {
+  expect(davinciRuntimeEnvironment({
+    SystemDrive: 'C:\\',
+    ProgramFiles: 'C:\\Program Files',
+  }, 'win32')).toEqual({
+    PROGRAMDATA: 'C:\\ProgramData',
+    PROGRAMFILES: 'C:\\Program Files',
+    RESOLVE_SCRIPT_API: 'C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Support\\Developer\\Scripting',
+    RESOLVE_SCRIPT_LIB: 'C:\\Program Files\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll',
+  });
+});
+
+it('uses the derived Resolve runtime environment for the disposable Python probe', async () => {
+  const runner = vi.fn(async (_executable: string, _args: string[], env: NodeJS.ProcessEnv) => {
+    expect(env.PROGRAMDATA).toBe('C:\\ProgramData');
+    expect(env.RESOLVE_SCRIPT_API).toBe('C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Support\\Developer\\Scripting');
+    expect(env.RESOLVE_SCRIPT_LIB).toBe('C:\\Program Files\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll');
+    return { code: 0, stdout: JSON.stringify({ imported: true, connected: true }), stderr: '' };
+  });
+  await expect(probeDavinciPython('C:\\Python\\python.exe', {
+    runner,
+    env: { SystemDrive: 'C:\\', ProgramFiles: 'C:\\Program Files' },
+  })).resolves.toMatchObject({ safe: true, connected: true });
+});
+
 it('fails closed on tool-surface drift and on a degraded backend health result', () => {
   expect(() => validateDavinciToolSurface([...DAVINCI_PUBLIC_TOOLS])).not.toThrow();
   expect(() => validateDavinciToolSurface([...DAVINCI_PUBLIC_TOOLS, 'execute_python'])).toThrow('tool surface mismatch');

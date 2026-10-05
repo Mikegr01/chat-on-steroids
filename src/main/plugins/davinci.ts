@@ -61,10 +61,37 @@ export function davinciRuntimeEnvironment(
   ];
   const entries = Object.entries(host);
   const result: Record<string, string> = {};
+  const valueFor = (key: string) => entries.find(([candidate, value]) =>
+    candidate.toUpperCase() === key && typeof value === 'string' && value.length > 0)?.[1];
   for (const key of wanted) {
-    const match = entries.find(([candidate, value]) =>
-      candidate.toUpperCase() === key && typeof value === 'string' && value.length > 0);
-    if (match?.[1]) result[key] = match[1];
+    const value = valueFor(key);
+    if (value) result[key] = value;
+  }
+  if (platform === 'win32') {
+    if (!result.PROGRAMDATA) {
+      const systemDrive = valueFor('SYSTEMDRIVE');
+      if (systemDrive && /^[A-Za-z]:\\?$/.test(systemDrive)) {
+        result.PROGRAMDATA = path.win32.join(systemDrive, 'ProgramData');
+      }
+    }
+    if (!result.RESOLVE_SCRIPT_API && result.PROGRAMDATA) {
+      result.RESOLVE_SCRIPT_API = path.win32.join(
+        result.PROGRAMDATA,
+        'Blackmagic Design',
+        'DaVinci Resolve',
+        'Support',
+        'Developer',
+        'Scripting',
+      );
+    }
+    if (!result.RESOLVE_SCRIPT_LIB && result.PROGRAMFILES) {
+      result.RESOLVE_SCRIPT_LIB = path.win32.join(
+        result.PROGRAMFILES,
+        'Blackmagic Design',
+        'DaVinci Resolve',
+        'fusionscript.dll',
+      );
+    }
   }
   return result;
 }
@@ -237,7 +264,11 @@ export async function probeDavinciPython(
   options: { runner?: DavinciProbeRunner; env?: NodeJS.ProcessEnv } = {},
 ): Promise<DavinciProbeResult> {
   const runner = options.runner ?? defaultProbeRunner;
-  const result = await runner(executable, ['-I', '-c', PROBE_SCRIPT], options.env ?? process.env);
+  const hostEnv = options.env ?? process.env;
+  const result = await runner(executable, ['-I', '-c', PROBE_SCRIPT], {
+    ...hostEnv,
+    ...davinciRuntimeEnvironment(hostEnv),
+  });
   let payload: Partial<DavinciProbeResult> = {};
   try {
     const line = result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
