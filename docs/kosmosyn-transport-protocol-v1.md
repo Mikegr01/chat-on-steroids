@@ -683,3 +683,109 @@ unchanged. No scope expansion or temporary task files. Branch/HEAD remain `custo
 `a29c4fde90d1609a5e3522824bc7c6288150faee`, staged 0. This is an unstaged implementation
 candidate ready for independent HEAD review; it is not implementation acceptance or live
 S6 mutation acceptance. No packaging, installation, production migration or S7.
+
+### S7 selective authority source candidate (2026-10-06)
+
+This unstaged source/test candidate starts from accepted commit
+`71762225ea0ba35c59224d466df208c2b70ca85c` in the linked worktree
+`Chat-On-Steroids-Custom-kosmosyn-s7`, branch `feature/kosmosyn-s7-authority`.
+Independent HEAD implementation review is pending. Production S7 remains OFF;
+no installed runtime migration, live S7/S6 Send, packaging, installation or S8
+has occurred. Concurrent canonical DaVinci work was not transplanted or changed.
+
+Admission requires a fresh ordinary desktop composer root input with frozen
+`orchestratorRequested=false` and explicit current-model provenance. The input
+must be a real UUID, mode auto with original browser intent and due now, never
+offered/claimed/authorized, uniquely bound through one durable desktop session to
+one existing idle conversation. Prepared text must equal authored text: nonempty,
+single line, at most 4096 UTF-16 units and 16384 UTF-8 bytes. No media, companions,
+tool images, model/reasoning override, Goal/Loop, automation, objective, stages,
+finish/recovery/silence work, direct/queued turn, helper, temporary lifetime,
+generated transformation, draft, attachments, auth challenge or competing
+tool/repair/command/send authority qualifies. Missing, malformed, generated,
+retry or orchestrator provenance cannot acquire S7 authority.
+
+The first ordinary desktop-input claim is the election. Background proves fresh
+Protocol V1 HELLO/WELCOME/READY with SEND_MESSAGE, exactly one suitable current
+Chrome top-frame document, settled navigation and empty writable composer. Chrome
+sender facts freeze command/target/tab/document/navigation/connection/background
+emitter identity. Main reserves synchronously, enters the input serializer, then
+the S7 service queue, and returns LEGACY_AUTHORITY, PROTOCOL_AUTHORITY or DEFER.
+Durable S7 ownership precedes input projection and typed handoff in that same
+HTTP claim response. The same content invocation retains its existing
+desktopInputBusy owner. There is no second post-selection wake, offer, election,
+document transfer or legacy fallback. No S7 browser-wake topic was added.
+
+The dedicated strict ledger distinguishes absent, valid, malformed, unreadable
+and unavailable-root states, with a strict schema and 1 MiB maximum. It retains
+at most 200 lifetime entries without eviction, pruning or consumed-ID reclamation,
+allows one global flight and excludes same-target competing authority.
+`cmd_s7_<inputUUID>` and `s7_send:<inputUUID>` permanently identify ownership.
+Failed writes publish no newer memory snapshot or delayed rejected generation.
+Every authority grant/write checks that the physical strict ledger still agrees
+with loaded custody. Unknown initialized custody fails closed even when disabled.
+Configuration defaults to enabled=false, initialized=false; ledger validation
+precedes durable initialization, and a later separate enable transaction is
+required. Disable serializes future selection only; existing custody survives.
+
+Content persists CLAIMED and accepted COMMAND_CLAIMED, freezes existing native
+user IDs, and requires durable EXECUTING/MESSAGE_SUBMIT_STARTED before insertion.
+After exact insertion and authority verification, a synchronous final fence
+immediately precedes the sole direct native Send-button click. There is no
+intervening await, Enter fallback, model switch or retry. Strong commit requires
+exactly one new bounded native data-message-id, absent from the frozen set and
+other retained ownership, exact target, canonical userMessageSource=true,
+actual raw text equal to authored text, and no attachments. Background forwards
+actual source bytes. Click/clear/generation/display-text evidence cannot commit.
+STRONG_COMMIT is durable before input/session-history publication; failed
+projection can reconcile only the same receipt, never repeat mutation.
+
+The existing bridgeRecovering startup barrier runs strict recovery and projection
+reconciliation before ordinary bridge publication. Coherently private unpublished
+PERSISTED/BLOCKED work becomes consumed CANCELED; uncertain versions and
+DISPATCHED/CLAIMED/EXECUTING become AMBIGUOUS. COMMITTED/COMPLETED reconcile receipt
+and history only. All terminal identities remain consumed and retire raw payload.
+Protocol callbacks release the service queue before entering input projection.
+
+Initial RED command ran the two new S7 suites before production implementation:
+collection failed with the missing `s7-authority.js` module, exit 1. The 44
+declared checks established a missing owner seam; they were not 44 independently
+observed behavior failures. Later genuine failing assertions caught a second
+suitable document appearing during READY, lost custody under gate OFF, readiness
+expiring while service selection was queued, changed/unreadable warm ledger
+granting authority, and a startup error rewriting an owned lost projection.
+Deferred-promise, strict disk, loopback HTTP and shipped background/content VM
+fixtures now cover these cases without live browser mutation.
+
+Final focused GREEN: authority 54, protocol/content/background 32, integration 12
+(three files, 98 tests, exit 0). Relevant unchanged regressions passed 2323 tests:
+S6 103, S5 52, session-input 190, input-delivery integration 278, browser-wake 5,
+bridge 585, content-script 773, extension 263 and config 74. Typecheck, build,
+extension syntax and diff-check passed. The final frozen-source `npm run verify:ci` with supported
+`VITEST_MAX_WORKERS=2` exited 0: 291 main files / 7288 tests passed, five files /
+52 tests skipped, then two serialized native/shutdown files / 26 tests passed.
+Privacy passed (728 commits / 18 tags), notices passed (154 production packages /
+10 catalog entries), and native-source verification passed (730 archives/patches).
+An earlier unbounded CI run failed S4 expiry and Blender disable tests; their
+independent focused rerun passed. No historical-flake classification is claimed.
+That earlier failure does not replace the final complete gate result.
+
+The additional repository UI gate is not green: 34/37 passed. Message-reaction
+position/scroll shifted 30 pixels, completed-plan animation assertion failed,
+and workspace-terminal expected a C: prompt in this required D: worktree. All
+three failures were independently reproduced with accepted HEAD renderer source
+and unchanged assertions in an ignored Git export inside this isolated worktree.
+The reaction rerun used a baseline-only Vite asset allowlist to remove font-load
+warnings and still reproduced the failure. Candidate UI fixtures/timeouts were
+not changed. These results are a verification limitation, not live acceptance.
+
+Exact production boundary: `src/main/browser-transport/s7-authority.ts` (new),
+`src/main/session/input.ts`, `src/main/bridge.ts`, `src/main/config.ts`,
+`src/main/durable.ts`, `src/shared/types.ts`, `src/renderer/chat.ts`,
+`extension/background.js` and `extension/content.js`. New tests are
+`test/kosmosyn-s7-authority.test.ts`, `test/kosmosyn-s7-integration.test.ts` and
+`test/protocol/protocol-s7-authority.test.ts`. Shared Protocol schemas,
+S6 controller, browser-wake, startup owner, package/installer identity, DaVinci,
+Photoshop and Official CoS source remain unchanged. Historical S0-S6 sections
+above are preserved. Candidate changes remain unstaged and uncommitted for
+independent HEAD review.

@@ -2090,6 +2090,7 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
       continue;
     }
     offerDesktopInput(tab.id, { type: 'clf-desktop-input', id: input.id, conversationId: target,
+      ...(input.s7Candidate === true ? { s7Candidate: true } : {}),
       ...(input.recovery ? { recovery: input.recovery } : {}),
       ...(input.silenceTurnId ? { silenceTurnId: input.silenceTurnId } : {}),
       ...(input.directTurn ? { directTurn: input.directTurn } : {}), ...(input.lifetime ? { lifetime: input.lifetime } : {}) });
@@ -2632,6 +2633,90 @@ async function s6ContentRequest(message, sender) {
   return { accepted: result?.accepted === true && await s6Revalidate(flight) && s6Current(flight) };
 }
 // End S6 controlled SEND_MESSAGE sidecar.
+
+// S7 preflights the original desktop_input claim. It never elects or offers a second document.
+let s7Flight = null;
+async function s7SourceCurrent(flight) {
+  if (!flight || wakeSocket !== flight.connection || token !== flight.credential || disconnected || !ownsDocument(flight.source)) return false;
+  const tab = await chrome.tabs.get(flight.source.tab).catch(() => null);
+  return !!tab && s6TabCurrent(tab, flight.source, flight.target) && wakeSocket === flight.connection && token === flight.credential;
+}
+async function s7FirstClaim(id, source, target) {
+  if (!target || !protocolEmitterEpoch || !wakeSocket || !token || disconnected || s7Flight) return null;
+  const flight = { inputId: id, source: { ...source }, target, connection: wakeSocket, credential: token, sequence: 0 };
+  s7Flight = flight;
+  try {
+    if (!await s7SourceCurrent(flight)) return null;
+    const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+    const candidates = tabs.filter(tab => s6TabCurrent(tab, { tab: tab.id,
+      documentId: tabDocuments[String(tab.id)], navigationEpoch: tabEpochs[String(tab.id)] }, target));
+    if (candidates.length !== 1 || candidates[0].id !== source.tab || !await s7SourceCurrent(flight)) return null;
+    const welcome = await protocolCanaryCall('/s7/hello', { emitterEpoch: protocolEmitterEpoch,
+      hello: { type: 'HELLO', protocolVersion: 1, extensionVersion: chrome.runtime.getManifest().version,
+        connectionGeneration: 0, capabilities: ['SEND_MESSAGE'] } }, flight.connection);
+    if (welcome?.type !== 'WELCOME' || welcome.acceptedProtocolVersion !== 1 ||
+        !welcome.negotiatedCapabilities?.includes('SEND_MESSAGE') || !await s7SourceCurrent(flight)) return null;
+    const ready = await protocolCanaryCall('/s7/ready', { emitterEpoch: protocolEmitterEpoch,
+      ready: { type: 'READY', connectionGeneration: welcome.connectionGeneration, connectionEpoch: welcome.connectionEpoch,
+        activeSessions: [], boundTabsCount: 1 } }, flight.connection);
+    if (ready?.ready !== true || !await s7SourceCurrent(flight)) return null;
+    // Readiness awaits can admit a newly suitable document. Count again before
+    // the first main claim; this validates the original sender, never re-elects it.
+    const readyTabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+    const readyCandidates = readyTabs.filter(tab => s6TabCurrent(tab, { tab: tab.id,
+      documentId: tabDocuments[String(tab.id)], navigationEpoch: tabEpochs[String(tab.id)] }, target));
+    if (readyCandidates.length !== 1 || readyCandidates[0].id !== source.tab || !await s7SourceCurrent(flight)) return null;
+    flight.election = { commandId: `cmd_s7_${id}`, targetConversationId: target, tabId: source.tab,
+      documentId: source.documentId, navigationEpoch: source.navigationEpoch, connectionEpoch: welcome.connectionEpoch,
+      backgroundEmitterEpoch: protocolEmitterEpoch };
+    return flight;
+  } finally { if (!flight.election && s7Flight === flight) s7Flight = null; }
+}
+async function s7Abort(flight) {
+  // Revocation can report the original election, but cannot transfer it to a new document.
+  if (flight?.election && wakeSocket === flight.connection && token === flight.credential)
+    await protocolCanaryCall('/s7/action', { action: 'abort', election: flight.election }, flight.connection);
+  if (s7Flight === flight) s7Flight = null;
+}
+async function s7ContentRequest(message, sender, source) {
+  const flight = s7Flight, e = flight?.election;
+  if (!e || !flight.command || sender.frameId !== 0 || sender.tab?.id !== e.tabId || sender.documentId !== e.documentId ||
+      source.navigationEpoch !== e.navigationEpoch || message.commandId !== e.commandId ||
+      message.navigationEpoch !== e.navigationEpoch) return { ok: false };
+  if (!await s7SourceCurrent(flight)) { await s7Abort(flight); return { ok: false }; }
+  if (message.action === 'abort') { await s7Abort(flight); return { ok: true }; }
+  if (message.action === 'claim' || message.action === 'verify') {
+    const result = await protocolCanaryCall('/s7/action', { action: message.action, election: e }, flight.connection);
+    if (!await s7SourceCurrent(flight)) { await s7Abort(flight); return { ok: false }; }
+    return result || { ok: false };
+  }
+  if (message.action !== 'event') return { accepted: false };
+  let payload, sourceProof;
+  if (message.eventType === 'COMMAND_CLAIMED') payload = { clientDocumentId: e.documentId, tabId: e.tabId, claimedAt: Date.now() };
+  else if (message.eventType === 'MESSAGE_SUBMIT_STARTED') {
+    const ids = message.beforeNativeIds;
+    if (!Array.isArray(ids) || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !id || id.length > 256)) return { accepted: false };
+    sourceProof = { beforeNativeIds: ids }; payload = {};
+  } else if (message.eventType === 'MESSAGE_COMMITTED') {
+    const proof = message.payload;
+    if (!proof || proof.canonical !== true || proof.candidateCount !== 1 || proof.attachmentCount !== 0 ||
+        proof.conversationId !== flight.target || typeof proof.sourceText !== 'string' || proof.sourceText.length > 4096 ||
+        typeof proof.nativeMessageId !== 'string' || !proof.nativeMessageId.trim() || proof.nativeMessageId.length > 256) return { accepted: false };
+    // Forward actual native source bytes; command.text is never substituted as evidence.
+    sourceProof = { canonical: true, candidateCount: 1, attachmentCount: 0, conversationId: proof.conversationId,
+      sourceText: proof.sourceText, nativeMessageId: proof.nativeMessageId };
+    payload = { proofLevel: 'STRONG_COMMIT', nativeMessageId: proof.nativeMessageId, conversationId: proof.conversationId,
+      candidateCount: 1, matchedText: proof.sourceText };
+  } else return { accepted: false };
+  const event = { protocolVersion: 1, eventId: `evt_${crypto.randomUUID()}`, commandId: e.commandId, eventType: message.eventType,
+    source: 'content-script', sessionId: flight.command.sessionId, conversationId: flight.target,
+    generation: 0, connectionEpoch: e.connectionEpoch, emitterEpoch: e.documentId, sequence: ++flight.sequence,
+    occurredAt: Date.now(), payload };
+  const result = await protocolCanaryCall('/s7/action', { action: 'event', election: e, event, sourceProof }, flight.connection);
+  const current = await s7SourceCurrent(flight);
+  if (message.eventType === 'MESSAGE_COMMITTED' && result?.accepted === true) { if (s7Flight === flight) s7Flight = null; }
+  return { accepted: result?.accepted === true && current };
+}
 // MV3 service workers require static imports; import() rejects before registration.
 // Instantiate the backend only on hosts exposing Chrome's debugger API.
 // Credentials stay in call(); pages/content scripts cannot submit browser commands.
@@ -3409,6 +3494,7 @@ async function bindPendingInputProject(message, source, conversationId) {
 }
 
 const HANDLERS = {
+  async s7_content(message, sender, source) { return s7ContentRequest(message, sender, source); },
   async s6_content(message, sender) { return s6ContentRequest(message, sender); },
   async plugin_refresh(message, _sender, source) {
     if (!ownsDocument(source) || !/^[a-f0-9-]{36}$/i.test(String(message.id || ''))) return { ok: false };
@@ -3472,9 +3558,24 @@ const HANDLERS = {
       return ownsDocument(source) ? result : { ok: false, error: 'stale_document' };
     }
     if (message.recoveryAction && message.owner !== owner) return { ok: false };
+    const s7 = !completed && message.requiresAuthorization === true && message.authorize !== true &&
+      !message.recoveryAction && !message.silenceBusyTurnId && message.s7Ready === true
+      ? await s7FirstClaim(id, source, conversationId) : null;
+    if (s7 && !await s7SourceCurrent(s7)) { await s7Abort(s7); return { ok: false }; }
     const result = await call(typeof message.partial === 'string' ? '/input/progress' : typeof message.response === 'string' ? '/input/answer' : message.fail === true ? '/input/fail' : message.ack === true ? '/input/ack' : '/input/claim', {
-      method: 'POST', body: JSON.stringify({ id, owner, conversationId, recoveryAction: ['stop', 'stopped'].includes(message.recoveryAction) ? message.recoveryAction : undefined, silenceBusyTurnId: typeof message.silenceBusyTurnId === 'string' ? message.silenceBusyTurnId : undefined, requiresAuthorization: message.requiresAuthorization === true, authorize: message.authorize === true, partial: typeof message.partial === 'string' ? message.partial.slice(-8000) : undefined, messageId: typeof message.messageId === 'string' ? message.messageId : undefined, error: message.error, response: typeof message.response === 'string' ? message.response.slice(0, 16001) : undefined })
+      method: 'POST', body: JSON.stringify({ id, owner, conversationId, ...(s7 ? { s7Preflight: { election: s7.election, uniqueDocuments: 1 } } : {}), recoveryAction: ['stop', 'stopped'].includes(message.recoveryAction) ? message.recoveryAction : undefined, silenceBusyTurnId: typeof message.silenceBusyTurnId === 'string' ? message.silenceBusyTurnId : undefined, requiresAuthorization: message.requiresAuthorization === true, authorize: message.authorize === true, partial: typeof message.partial === 'string' ? message.partial.slice(-8000) : undefined, messageId: typeof message.messageId === 'string' ? message.messageId : undefined, error: message.error, response: typeof message.response === 'string' ? message.response.slice(0, 16001) : undefined })
     });
+    if (s7) {
+      const handoff = result?.data?.s7;
+      if (handoff) {
+        if (handoff.kind !== 'S7_PROTOCOL_HANDOFF' || JSON.stringify(handoff.election) !== JSON.stringify(s7.election) ||
+            handoff.command?.commandId !== `cmd_s7_${id}` || handoff.command?.idempotencyKey !== `s7_send:${id}` ||
+            handoff.command?.conversationId !== conversationId || !await s7SourceCurrent(s7)) {
+          await s7Abort(s7); return { ok: false };
+        }
+        s7.command = handoff.command;
+      } else if (s7Flight === s7) s7Flight = null;
+    } else if (result?.data?.s7) return { ok: false };
     if (typeof message.response === 'string' && message.lifetime === 'temporary-planner' && result.ok && result.data?.ok === true && ownsDocument(source)) {
       // Acceptance retires this exact helper immediately. Fresh page proof still
       // protects generation, a user draft, pinning and document/navigation changes.

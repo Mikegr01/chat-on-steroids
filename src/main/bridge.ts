@@ -12,6 +12,8 @@ import { injectedUserMessage, recordedRequestTurn, responseTurnId, type Timeline
 import type { SessionSummary } from '../shared/session.js';
 import { publishBrowserDecision, authorizeBrowserInput, sessionInputPolicy, collectRecordedBrowserDecision, type InputActivity } from './session/input.js';
 import { S6Canary, s6TargetHeld, type S6Options, type S6Result } from './browser-transport/s6-canary.js';
+import { s7Authority, s7ElectionSchema } from './browser-transport/s7-authority.js';
+import { reconcileS7InputReceipts } from './session/input.js';
 import { pluginRefreshPublications, pendingPluginRefreshes, claimPluginRefresh, requireManualPluginRefresh, completePluginRefresh, failPluginRefresh } from './plugin-refresh.js';
 import { attachBrowserWake, wakeBrowserWork } from './browser-wake.js';
 import { wakeBrowserUrl } from './browser-startup.js';
@@ -1874,7 +1876,7 @@ export async function runS4Canary(options: { enabled: boolean; handshakeTimeoutM
 export function runS6Canary(options: S6Options): Promise<S6Result> {
   if (!options || options.enabled !== true) return Promise.resolve({ ok: false, failureCode: 'DISABLED' });
   if (!server || !bridgeDesiredRunning || bridgeRecovering) return Promise.resolve({ ok: false, failureCode: 'BRIDGE_UNAVAILABLE' });
-  if (protocolSidecarOwner === 's4') return Promise.resolve({ ok: false, failureCode: 'BUSY' });
+  if (protocolSidecarOwner === 's4' || s7Authority.targetHeld(options.targetConversationId)) return Promise.resolve({ ok: false, failureCode: 'BUSY' });
   protocolSidecarOwner = 's6';
   s6Canary ??= new S6Canary(() => wakeBrowserWork('protocol-s6-canary'), async target => {
     // listInputs enters the private input serializer behind any earlier legacy claim.
@@ -2219,6 +2221,40 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     } catch { return json(res, 400, { error: 'invalid_usage' }, origin); }
   }
 
+  if (route.startsWith('/s7/') && req.method === 'POST') {
+    if (staleCompanion(req) || bridgeRecovering) return json(res, 409, { ok: false }, origin);
+    const body = await readBody(req) as Record<string, unknown>;
+    if (!body || Array.isArray(body) || typeof body !== 'object') return json(res, 400, { ok: false }, origin);
+    if (route === '/s7/hello' || route === '/s7/ready') {
+      const reply = s7Authority.handshake(route === '/s7/hello' ? 'hello' : 'ready', { ...body, appVersion: APP_VERSION });
+      return json(res, reply ? 200 : 409, reply ?? { ok: false }, origin);
+    }
+    if (route !== '/s7/action') return json(res, 404, { ok: false }, origin);
+    const election = s7ElectionSchema.safeParse(body.election);
+    if (!election.success) return json(res, 400, { ok: false }, origin);
+    const target = election.data.targetConversationId;
+    const action = body.action;
+    if (!['claim', 'verify', 'abort', 'event'].includes(String(action))) return json(res, 400, { ok: false }, origin);
+    if (action !== 'abort' && (runningToolCalls(target) > 0 || repairsInFlight.has(target) || isChatBlocked(target) || stopRequestedFor(target)))
+      return json(res, 409, { ok: false }, origin);
+    const eventType = (body.event as Record<string, unknown> | undefined)?.eventType;
+    const mapped = action === 'event' ? { COMMAND_CLAIMED: 'claimed', MESSAGE_SUBMIT_STARTED: 'start', MESSAGE_COMMITTED: 'commit' }[String(eventType)] : String(action);
+    if (!mapped) return json(res, 400, { ok: false }, origin);
+    if (mapped !== 'abort') {
+      const record = s7Authority.records().find(row => row.commandId === election.data.commandId);
+      const session = record ? await getSession(record.sessionId) : null;
+      if (!record || session?.conversationId !== target || session.origin?.kind !== 'desktop' || goalSwitchFor(target).enabled ||
+          s6TargetHeld(target) || protocolSidecarOwner !== 'none' ||
+          commands.some(command => 'conversationId' in command.spec && command.spec.conversationId === target) ||
+          (mapped !== 'commit' && (chatIsWorking(target) || !(await sessionInputPolicy(session.id)).browserAllowed)))
+        return json(res, 409, { ok: false }, origin);
+      if (runningToolCalls(target) > 0 || repairsInFlight.has(target) || isChatBlocked(target) || stopRequestedFor(target))
+        return json(res, 409, { ok: false }, origin);
+    }
+    const result = await s7Authority.action(mapped, election.data, body.sourceProof, action === 'event' ? body.event : undefined);
+    if (mapped === 'commit' || mapped === 'abort') await reconcileS7InputReceipts().catch(() => undefined);
+    return json(res, 200, action === 'event' ? { accepted: result.ok } : result, origin);
+  }
   if (['/input/claim', '/input/bind', '/input/ack', '/input/fail', '/input/answer', '/input/progress', '/input/attachment'].includes(route) && req.method === 'POST') {
     const body = await readBody(req) as Record<string, unknown>;
     if (!body || typeof body.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.id) || typeof body.owner !== 'string' || body.owner.length > 160) {
@@ -2294,13 +2330,24 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (body.authorize === true) {
       // No await between this final process-lease fence and entering input's serializer.
-      if (s6TargetHeld(target)) return json(res, 200, { ok: false }, origin);
+      if (s6TargetHeld(target) || s7Authority.targetHeld(target)) return json(res, 200, { ok: false }, origin);
       return json(res, 200, { ok: await authorizeBrowserInput(body.id, body.owner, target) }, origin);
     }
     if (target && runningToolCalls(target) > 0) return json(res, 200, { input: null }, origin);
     if (staleCompanion(req)) return json(res, 200, { input: null }, origin);
     if (s6TargetHeld(target)) return json(res, 200, { input: null }, origin);
-    const input = await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
+    const preflight = body.s7Preflight as Record<string, unknown> | undefined;
+    const elected = s7ElectionSchema.safeParse(preflight?.election);
+    const current = () => !!target && !!server && bridgeDesiredRunning && !bridgeRecovering &&
+      elected.success && s7Authority.ready(elected.data) && !isChatBlocked(target) && !stopRequestedFor(target) && runningToolCalls(target) === 0 &&
+      !repairsInFlight.has(target) && !chatIsWorking(target) && protocolSidecarOwner === 'none' &&
+      !commands.some(command => 'conversationId' in command.spec && command.spec.conversationId === target);
+    const input = getConfig().kosmosynS7.enabled ? await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true, {
+      election: elected.success ? elected.data : {} as never, ready: elected.success && s7Authority.ready(elected.data),
+      uniqueDocuments: preflight?.uniqueDocuments === 1 ? 1 : 0, current, conflict: !current() ||
+        commands.some(command => 'conversationId' in command.spec && command.spec.conversationId === target)
+    }) : await claimBrowserInput(body.id, body.owner, target, body.requiresAuthorization === true);
+    if (input && 'kind' in input) return json(res, 200, { input: null, s7: input }, origin);
     if (input !== null && process.env['CLF_KOSMOSYN_SHADOW_V0'] === '1') {
       try {
         observeLegacyBrowserClaim({ legacyInputId: input.id, text: input.text,
@@ -5037,6 +5084,8 @@ async function startBridgeOnce(epoch: number, prepared?: PreparedBridge): Promis
   // has nobody to ask until this moment — and queue() folds a replayed worker into
   // the restored command for the same worker rather than opening a second tab.
   try {
+    await s7Authority.recover();
+    await reconcileS7InputReceipts();
     await restoreCommands();
   } catch (err) {
     // Recovery is part of opening the bridge, not best-effort work after it. In particular,
@@ -5149,6 +5198,7 @@ function drainBridgeListener(instance: http.Server): Promise<void> {
 }
 
 export async function stopBridge(): Promise<void> {
+  s7Authority.invalidateConnection();
   protocolCanary?.disable();
   s6Canary?.disable();
   if (!bridgeDesiredRunning && bridgeStopRequest) return bridgeStopRequest;

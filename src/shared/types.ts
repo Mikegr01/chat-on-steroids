@@ -345,6 +345,8 @@ export interface ControlApiSettings {
 }
 
 export interface Config {
+  /** Local source-candidate gate; no browser, connector or MCP enable route. */
+  kosmosynS7: { enabled: boolean; initialized: boolean };
   /** Inactive setups only. Keys remain in encrypted secret slots addressed by profile ID. */
   setupProfiles?: Array<{ id: string; name: string; tunnelId: string; desktopTunnelId: string; pluginsTunnelId: string }>;
   roots: Root[];

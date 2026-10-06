@@ -1,5 +1,6 @@
 import { REASONING_EFFORTS } from '../shared/session.js';
 import { appearanceSchema } from './appearance-schema.js';
+import { s7Authority, configureS7Gate } from './browser-transport/s7-authority.js';
 import { BROWSER_BRIDGE_PORTS } from '../shared/browser-bridge.js';
 /**
  * Non-secret settings, stored as one small JSON file in the app's userData folder.
@@ -277,6 +278,9 @@ const commandAllowlistRuleSchema = z.string().max(MAX_COMMAND_ALLOWLIST_RULE_CHA
 });
 
 const configSchema = z.object({
+  kosmosynS7: z.object({ enabled: z.boolean(), initialized: z.boolean() }).strict()
+    .refine(value => !value.enabled || value.initialized)
+    .optional().default({ enabled: false, initialized: false }).catch({ enabled: false, initialized: false }),
   // A config written by hand — or by a build before `/skills` was reserved — must not be
   // able to claim a reserved virtual root. Renamed rather than rejected: a single bad root
   // name is not a reason to throw away the whole config and every other approved folder.
@@ -524,6 +528,7 @@ function firstLaunchCapabilities(platform: NodeJS.Platform, release?: string): C
 
 export function defaultConfig(platform: NodeJS.Platform = process.platform, release?: string): Config {
   return {
+    kosmosynS7: { enabled: false, initialized: false },
     roots: [],
     capabilities: firstLaunchCapabilities(platform, release),
     readOnly: false,
@@ -584,6 +589,7 @@ function adoptCurrentGoalPrompt(config: Config): Config {
 
 let configPath = '';
 let current: Config = defaultConfig();
+configureS7Gate(() => current.kosmosynS7);
 // Every UI mutation ultimately lands in the same tiny JSON file. Keep those
 // read-modify-write transactions strictly ordered so two fast checkbox/root changes
 // cannot race on config.json.tmp or overwrite each other's newer state.
@@ -737,7 +743,13 @@ export function updateConfig(
     const previous = current;
     // Validate before reserving external resources. The optional publisher owns their rollback.
     const proposed = configSchema.parse(await update(previous));
-    const persist = () => persistConfig(proposed);
+    const persist = () => s7Authority.withSettings(async () => {
+      if (previous.kosmosynS7.initialized && !proposed.kosmosynS7.initialized) throw new Error('S7 initialized custody cannot be reset');
+      if (proposed.kosmosynS7.enabled && (!previous.kosmosynS7.initialized || !proposed.kosmosynS7.initialized)) throw new Error('Initialize S7 custody before enabling');
+      if (proposed.kosmosynS7.initialized && (!previous.kosmosynS7.initialized || proposed.kosmosynS7.enabled))
+        await s7Authority.validateInitialized();
+      return persistConfig(proposed);
+    });
     const next = await (publish ? publish(proposed, previous, persist) : persist());
     // Keep dependent durable retirement inside the same settings transaction;
     // the next On cannot overtake a published Off's cancellation work.

@@ -4354,6 +4354,7 @@ async function retryPlannedInput(entry: InputEntry): Promise<void> {
   // its stage-one display text, and never revive the old browser claim/receipt.
   const { sessionId, projectId, text, objective, stages, images, attachments, attachmentDelivery, automation, loopAfterTurn, model, reasoningEffort, afterTurn } = entry;
   const args: InputArgs = { id: crypto.randomUUID(), sessionId, projectId, text, objective, stages, images, attachments, attachmentDelivery,
+    provenance: { kind: 'retry', orchestratorRequested: entry.provenance?.orchestratorRequested ?? false, modelChoice: 'unspecified' },
     automation, loopAfterTurn, model, reasoningEffort, afterTurn, mode: entry.requestedMode ?? entry.mode, dueAt: Date.now() };
   const generation = selectionGeneration;
   // Hide during the attempt, but persist dismissal only after its replacement is durable.
@@ -4453,6 +4454,10 @@ async function sendComposer(delivery?: 'finish', plan?: string[], planObjective?
       controlledCanInject && images.some(file => 'id' in file) && injectableAttachments(images) ? { attachmentDelivery: 'tool' as const } : {}) };
   const objective = plan ? planObjective : mode === 'finish' ? undefined : $<HTMLTextAreaElement>('sessionObjective').value.trim() || undefined;
   const authoredSource = plan ? 'objective' as const : 'text' as const;
+  // composerSendModel's null pair is returned only for the explicit current-model choice.
+  // Freeze renderer-local orchestration intent before the first enqueue await.
+  const provenance = { kind: plan ? 'generated' as const : 'ordinary-composer' as const,
+    orchestratorRequested, modelChoice: modelSettings.model === null && modelSettings.reasoningEffort === null ? 'current' as const : 'explicit' as const };
   startingInputs.set(id, { id, sessionId, projectId, text, ...attachmentPayload, stages: plan?.slice(1), objective, authoredSource, mode: mode === 'finish' ? 'finish' : mode === 'auto' ? 'auto' : 'after-turn',
     dueAt, ...modelSettings, state: 'queued', owner: null, createdAt: dueAt, conversationId: null });
   replaceComposerDraft();
@@ -4463,7 +4468,7 @@ async function sendComposer(delivery?: 'finish', plan?: string[], planObjective?
   void refreshInputQueue();
   paintDeliveryControls();
   try {
-    const result = await run(api.sendInput({ id, sessionId, projectId, text, ...attachmentPayload, stages: plan?.slice(1), objective, authoredSource, automation: mode === 'finish' ? undefined : $<HTMLSelectElement>('chatAutomation').value as InputAutomation, loopAfterTurn: openingLoopDelivery(), mode: mode === 'finish' ? 'finish' : mode === 'auto' ? 'auto' : 'after-turn', dueAt, ...modelSettings }));
+    const result = await run(api.sendInput({ id, sessionId, projectId, text, ...attachmentPayload, provenance, stages: plan?.slice(1), objective, authoredSource, automation: mode === 'finish' ? undefined : $<HTMLSelectElement>('chatAutomation').value as InputAutomation, loopAfterTurn: openingLoopDelivery(), mode: mode === 'finish' ? 'finish' : mode === 'auto' ? 'auto' : 'after-turn', dueAt, ...modelSettings }));
     if (cancelledStarts.has(id)) return;
     if (!result) {
       // A disk failure after outbox commit still owns this input. Keep its exact

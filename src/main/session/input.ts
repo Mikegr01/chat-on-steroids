@@ -18,14 +18,17 @@ import { logInfo, logWarn } from '../logger.js';
 import { noteChatOrigin } from './recorder.js';
 import { isAstraModel, isProModel } from '../../shared/chat-models.js';
 import { inFlightToolCalls } from '../mcp/call-context.js';
-import { automaticFinishEnabled, goalDrivingMode, consumeGoalReplyForInputNow } from '../goal.js';
+import { automaticFinishEnabled, goalDrivingMode, goalSwitchFor, consumeGoalReplyForInputNow } from '../goal.js';
 import { finishInstruction } from '../../shared/finish.js';
 import { attachmentSchema, validateInputAttachments, normalizeInputAttachments } from './input-attachments.js';
 import { MAX_CHATGPT_MESSAGE_CHARS } from '../../shared/user-prompt.js';
 import type { PromptLimits } from './prompt.js';
 import { recoveryMessage, recoveryBusyMs } from '../../shared/recovery.js';
+import { s7Authority, type S7Context, type S7Selection } from '../browser-transport/s7-authority.js';
 
 export const inputArgs = z.object({
+  provenance: z.object({ kind: z.enum(['ordinary-composer', 'generated', 'retry']), orchestratorRequested: z.boolean(),
+    modelChoice: z.enum(['current', 'explicit', 'unspecified']) }).strict().optional(),
   projectId: z.string().uuid().nullable().optional(),
   automation: z.enum(['off', 'goal', 'loop']).optional(),
   loopAfterTurn: z.boolean().optional(),
@@ -80,6 +83,7 @@ const entrySchema = inputArgs.extend({
   toolTurnId: z.string().min(1).max(256).optional(),
   sendAuthorizedAt: z.number().optional(),
   requiresAuthorization: z.boolean().optional(),
+  protocolCommandId: z.string().regex(/^cmd_s7_[0-9a-f-]{36}$/i).optional(),
   cancelledByUser: z.literal(true).optional(),
   error: z.string().max(200).optional(),
   owner: z.string().nullable(),
@@ -170,7 +174,8 @@ export async function sessionInputPolicy(sessionId: string, observedActivity?: I
     // comparison would leave the composer unsettled after the activity clock stopped.
     settled: settled && !executing && (!!completed || (session.lastToolCallAt ?? 0) <= (end?.time ?? 0)) };
 }
-async function browserInputAllowed(entry: InputEntry): Promise<boolean> {
+async function browserInputAllowed(entry: InputEntry, reservation?: import('../browser-transport/s7-authority.js').S7Reservation): Promise<boolean> {
+  if (s7Authority.blocks(entry, reservation) || s7Authority.targetHeld(entry.conversationId, reservation)) return false;
   if (entry.error?.startsWith('Local chat setup failed:')) return false;
   // Authored Inject-now custody never changes transports. Its exact turn either
   // offers it from an MCP response or expires it visibly below.
@@ -225,6 +230,7 @@ export function hasEligibleToolInput(sessionId: string, finishBoundary = false):
     if (current.some(row => row.sessionId === sessionId && row.state === 'browser')) return false;
     const head = current.find(row => row.sessionId === sessionId && queuedFollowup(row) && ['queued', 'tool'].includes(row.state));
     for (const row of current) {
+      if (s7Authority.blocks(row) || s7Authority.targetHeld(row.conversationId)) continue;
       if (row.sessionId !== sessionId || row.dueAt > Date.now()) continue;
       if (row.attachments?.length && row.attachmentDelivery !== 'tool' && row.delivery !== 'tool') continue;
       if (row.mode === 'after-turn' || (row.mode === 'finish' && !finishBoundary)) continue;
@@ -241,9 +247,9 @@ let chain: Promise<unknown> = Promise.resolve();
 // available. Restart discards this evidence and repeats the stable message id.
 const offered = new Map<string, number>();
 const terminal = (row: InputEntry): boolean => ['sent', 'cancelled', 'failed'].includes(row.state);
-const preparable = (row: InputEntry): boolean => row.state === 'queued' ||
-  (row.state === 'browser' && row.requiresAuthorization === true && row.sendAuthorizedAt === undefined);
-const needsHistory = (row: InputEntry): boolean => row.purpose !== 'decision' && !row.historyRecorded &&
+const preparable = (row: InputEntry, reservation?: import('../browser-transport/s7-authority.js').S7Reservation): boolean => !s7Authority.blocks(row, reservation) && (row.state === 'queued' ||
+  (row.state === 'browser' && row.requiresAuthorization === true && row.sendAuthorizedAt === undefined));
+const needsHistory = (row: InputEntry): boolean => s7Authority.historyAllowed(row) && row.purpose !== 'decision' && !row.historyRecorded &&
   ((row.state === 'tool' && Number.isFinite(row.offeredAt)) || ((row.state === 'sent' || row.state === 'cancelled') && !!row.messageId));
 const pendingStages = (row: InputEntry): boolean => row.state === 'sent' && !!row.stages?.length && !row.stagesApplied;
 const ordered = (rows: InputEntry[]): InputEntry[] => [...rows].sort((a, b) =>
@@ -403,6 +409,7 @@ async function retireRemovedSessionReceipts(current: InputEntry[], pendingOnly =
 }
 async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
   const next = await Promise.all(current.map(async (row): Promise<InputEntry> => {
+    if (s7Authority.blocks(row)) return row;
     if (companionOf(current, row)) return row;
     if (row.recovery && row.state === 'browser' && row.sendAuthorizedAt !== undefined &&
         row.sessionId && row.conversationId && row.silenceBoundary?.conversationId === row.conversationId &&
@@ -480,7 +487,7 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
   }
   return entries!;
 }
-async function commit(next: InputEntry[]): Promise<void> {
+async function commit(next: InputEntry[], wake = true): Promise<void> {
   // A temporary planner keeps only ownership metadata across restart, never its task or answer.
   const durableRows = (rows: InputEntry[]) => rows.map(row => row.lifetime === 'temporary-planner'
     ? { ...row, text: '[Temporary planner]', deliveryText: undefined, response: undefined } : row);
@@ -492,7 +499,7 @@ async function commit(next: InputEntry[]): Promise<void> {
     throw error;
   }
   entries = next;
-  wakeBrowserWork();
+  if (wake) wakeBrowserWork();
   for (const listener of inputListeners) { try { listener(); } catch { /* observer only */ } }
   try { deliveryHooks?.changed(); } catch { /* a detached renderer does not undo a durable commit */ }
 }
@@ -756,7 +763,8 @@ async function publishHistory(): Promise<void> {
   }
   if (recorded.size || current.some(row => anchored.has(row.id) && (!row.historyAnchored || row.historySeq !== anchored.get(row.id)))) {
     try { await commit(current.map(row => recorded.has(row.id) || anchored.has(row.id)
-      ? { ...row, ...(recorded.has(row.id) ? { historyRecorded: true } : {}), ...(anchored.has(row.id) ? { historyAnchored: true, historySeq: anchored.get(row.id) } : {}) } : row)); }
+      ? { ...row, ...(recorded.has(row.id) ? { historyRecorded: true } : {}), ...(anchored.has(row.id) ? { historyAnchored: true, historySeq: anchored.get(row.id) } : {}) } : row),
+      current.some(row => (recorded.has(row.id) || anchored.has(row.id)) && !s7Authority.blocks(row))); }
     catch { /* the durable delivery receipt remains; canonical retry is idempotent */ }
   }
 }
@@ -765,7 +773,7 @@ export function cancelInput(id: string): Promise<boolean> {
     const current = await load();
     const selected = current.find((entry) => entry.id === id);
     const found = selected && (companionOf(current, selected) ?? selected);
-    if (!found || !['queued', 'browser', 'failed', 'cancelled'].includes(found.state)) return false;
+    if (!found || s7Authority.blocks(found) || !['queued', 'browser', 'failed', 'cancelled'].includes(found.state)) return false;
     await commit(current.map((entry) => sameDelivery(found, entry) ? { ...entry, state: 'cancelled', cancelledByUser: true,
       error: found.state === 'browser' ? found.requiresAuthorization && found.sendAuthorizedAt === undefined
         ? 'Not sent: this delivery was cancelled before Send was authorized.'
@@ -847,7 +855,7 @@ export function editQueuedInput(id: string, text: string, afterTurn?: boolean): 
     const value = inputArgs.shape.text.parse(text);
     const current = await load();
     const row = current.find(entry => entry.id === id && entry.state === 'queued' && queuedFollowup(entry) && !entry.recovery);
-    if (!row) return false;
+    if (!row || s7Authority.blocks(row)) return false;
     if (current.filter(entry => !terminal(entry)).reduce((sum, entry) => sum + Buffer.byteLength(entry === row ? value : entry.text), 0) > 1024000) throw new Error('Queued messages exceed the text limit');
     await commit(current.map(entry => entry === row ? { ...row, text: value, authoredSource: 'text', ...(afterTurn === undefined ? {} : { afterTurn }), deliveryText: undefined } : entry));
     return true;
@@ -885,7 +893,7 @@ export function setInputAutomation(id: string, automation: NonNullable<InputArgs
     const delivery = z.boolean().optional().parse(loopAfterTurn);
     const current = await load();
     const entry = current.find(row => row.id === id && row.purpose !== 'decision' && ['queued', 'browser', 'sent', 'tool'].includes(row.state));
-    if (!entry) return false;
+    if (!entry || s7Authority.blocks(entry)) return false;
     const conversationId = entry.conversationId;
     if (conversationId && await conversationWasSuperseded(conversationId)) return false;
     const sessionId = entry.sessionId ?? entry.deliveredSessionId;
@@ -907,12 +915,14 @@ export function noteInputStartupError(id: string, error: string | null): Promise
     const current = await load();
     const row = current.find(entry => entry.id === id);
     if (!row) return null;
+    if (s7Authority.blocks(row)) return { ...row };
     if (row.state !== 'queued') return { ...row };
     // Retry session materialization through its accepted identity before releasing
     // browser delivery. A failed project write must not be hidden by a wake result.
     try { await materializeOpening(row); }
     catch (failure) { error = 'Local chat setup failed: ' + (failure as Error).message; }
-    const next = { ...row, error: error ? error.slice(0, 200) : undefined };
+    const next = { ...row, error: error ? error.slice(0, 200) : undefined,
+      ...(row.provenance && row.error && error === null ? { provenance: { ...row.provenance, kind: 'retry' as const } } : {}) };
     await commit(current.map(entry => entry === row ? next : entry));
     return { ...next };
   });
@@ -1265,9 +1275,9 @@ async function completedStageBoundary(entry: InputEntry, current: InputEntry[]):
       row.dueAt <= Date.now() && ['queued', 'browser', 'tool'].includes(row.state))) return null;
   return turnId;
 }
-export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner' }>> {
+export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; s7Candidate?: true; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner' }>> {
   return serial(async () => {
-    const result: Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner' }> = [];
+    const result: Array<{ id: string; conversationId: string | null; s7Candidate?: true; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner' }> = [];
     const current = await load();
     for (const entry of ordered(current)) {
       if (companionOf(current, entry)) continue;
@@ -1281,6 +1291,8 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
         const silenceTurnId = entry.silenceBoundary?.turnId ?? (end?.kind === 'turn_end' && end.outcome === 'failed' &&
           end.reason === 'thinking_failed' && end.turnId && await eligibleStageEnd(entry) === end.turnId ? end.turnId : undefined);
         result.push({ id: entry.id, conversationId,
+          ...(getConfig().kosmosynS7?.enabled === true && entry.provenance?.kind === 'ordinary-composer' &&
+            entry.provenance.orchestratorRequested === false && entry.provenance.modelChoice === 'current' ? { s7Candidate: true as const } : {}),
           ...(entry.recovery ? { recovery: { questionId: entry.recovery.questionId, stop: entry.silenceBoundary?.nativeBusy === true && entry.recovery.phase === 'ready' } } : {}),
           ...(silenceTurnId ? { silenceTurnId } : {}),
           ...(entry.directTurn ? { directTurn: entry.directTurn } : {}),
@@ -1292,11 +1304,20 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
     return result;
   });
 }
-export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization = false): Promise<InputEntry | null> {
+export type S7ClaimPreflight = Pick<S7Context, 'election' | 'ready' | 'uniqueDocuments' | 'current' | 'conflict'>;
+export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization?: boolean): Promise<InputEntry | null>;
+export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization: boolean, s7: S7ClaimPreflight): Promise<InputEntry | Extract<S7Selection, { kind: 'PROTOCOL_AUTHORITY' }>['handoff'] | null>;
+export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization = false, s7?: S7ClaimPreflight): Promise<InputEntry | Extract<S7Selection, { kind: 'PROTOCOL_AUTHORITY' }>['handoff'] | null> {
+  // Reserve synchronously before entering the input serializer. Service callbacks
+  // release their queue before projecting receipts back through that serializer.
+  const reservation = s7 && conversationId && getConfig().kosmosynS7?.enabled === true
+    ? s7Authority.reserve(id, conversationId) : undefined;
+  if (reservation === null) return Promise.resolve(null);
   return serial(async () => {
     const current = await load();
     const entry = current.find((row) => row.id === id);
-    if (!entry || !preparable(entry) || (entry.state === 'browser' && !requiresAuthorization) || entry.dueAt > Date.now() || !owner) return null;
+    if (s7Authority.blocks({ id }, reservation)) return null;
+    if (!entry || !preparable(entry, reservation) || (entry.state === 'browser' && !requiresAuthorization) || entry.dueAt > Date.now() || !owner) return null;
     if (entry.recovery && entry.state === 'browser' && entry.owner !== owner) return null;
     if (entry.recovery?.reloadOwner === owner) return null;
     if (companionOf(current, entry)) return null;
@@ -1304,7 +1325,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
       ? await completedStageBoundary(entry, current) : manualInput(entry) ? await eligibleStageEnd(entry) : undefined;
     if (queuedFollowup(entry) && !completedTurnId) return null;
     if (await target(entry) !== conversationId) return null;
-    if (!(await browserInputAllowed(entry))) return null;
+    if (!(await browserInputAllowed(entry, reservation))) return null;
     if (entry.purpose === 'decision' && !decisionWaiters.has(id)) return null;
     if (entry.projectId) await projectWorkspace(entry.projectId);
     if (entry.sessionId) {
@@ -1357,6 +1378,21 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
         ? { ...entry, state: 'failed', error: (error as Error).message.slice(0, 200) } : row));
       throw error;
     }
+    if (s7 && getConfig().kosmosynS7?.enabled === true) {
+      const unique = conversationId ? await findSessionByConversation(conversationId, { requireUnique: true }) : null;
+      const policy = session ? await sessionInputPolicy(session.id) : null;
+      const result = await s7Authority.select({ ...entry, deliveryText: claimed.deliveryText ?? claimed.text }, {
+        ...s7, session, uniqueSession: unique?.id === entry.sessionId, idle: policy?.browserAllowed === true,
+        automationOff: !!conversationId && !goalSwitchFor(conversationId).enabled,
+        companion: !!companion || !!companionOf(current, entry) }, reservation);
+      if (result.kind === 'DEFER') return null;
+      if (result.kind === 'PROTOCOL_AUTHORITY') {
+        try { await commit(current.map(row => row === entry ? { ...entry, state: 'browser', owner,
+          protocolCommandId: result.handoff.command.commandId, deliveryText: entry.text, requiresAuthorization: true,
+          offeredAt: Date.now() } : row), false); } catch { /* Canonical S7 custody survives a failed projection. */ }
+        return result.handoff;
+      }
+    }
     await transition(current, current.map((row) => row === entry ? claimed : row === companion ? { ...row,
       state: 'browser', owner, conversationId, offeredAt: claimed.offeredAt, requiresAuthorization, completedTurnId: claimed.completedTurnId } : row),
       entry.state === 'queued' && entry.automation && conversationId && entry.purpose !== 'decision' ? [claimed] : [], 'before-send');
@@ -1364,7 +1400,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
       await consumeGoalReplyForInputNow(conversationId, entry.sessionId, completedTurnId);
     logInfo(`input ${id}: browser claimed after ${Math.max(0, Date.now() - entry.createdAt)} ms`);
     return { ...combinedInput(claimed, companion), ...selection, text: claimed.deliveryText ?? claimed.text };
-  });
+  }).finally(() => { if (reservation) s7Authority.release(reservation); });
 }
 /** Initial provider binding uses the same reserved session as local admission. */
 async function bindOpening(entry: InputEntry, conversationId: string): Promise<boolean> {
@@ -1380,6 +1416,7 @@ async function bindOpening(entry: InputEntry, conversationId: string): Promise<b
 /** Bind exact opening/project ownership before the document publishes request evidence. */
 export function bindBrowserInputProject(id: string, owner: string, conversationId: string): Promise<boolean> {
   return serial(async () => {
+    if (s7Authority.blocks({ id })) return false;
     if (!owner || !/^[0-9a-z-]{8,256}$/i.test(conversationId)) return false;
     const current = await load();
     const entry = current.find(row => row.id === id && row.owner === owner);
@@ -1405,6 +1442,7 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
   return serial(async () => {
     const current = await load();
     const entry = current.find((row) => row.id === id && row.owner === owner);
+    if (s7Authority.blocks({ id })) return false;
     if (entry && companionOf(current, entry)) return false;
     if (!owner || !entry || !['browser', 'sent', 'decision', 'cancelled'].includes(entry.state) ||
       (entry.state === 'cancelled' && entry.purpose === 'decision')) return false;
@@ -1441,8 +1479,32 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
     return true;
   });
 }
+/** Canonical S7 facts project after releasing its service queue; no reverse queue acquisition. */
+export function reconcileS7InputReceipts(): Promise<void> {
+  const receipts = s7Authority.records();
+  return serial(async () => {
+    const current = await load();
+    const next = current.map(row => {
+      const record = receipts.find(record => record.inputId === row.id);
+      if (!record || !s7Authority.receiptMatches(record, row)) return row;
+      if (['COMMITTED', 'COMPLETED'].includes(record.state) && record.nativeMessageId && record.committedAt !== undefined) {
+        if (row.state === 'sent' && row.messageId === record.nativeMessageId && row.deliveredAt === record.committedAt) return row;
+        return { ...row, state: 'sent' as const, protocolCommandId: record.commandId,
+          deliveredSessionId: record.sessionId, messageId: record.nativeMessageId, deliveredAt: record.committedAt,
+          historyRecorded: false, error: undefined };
+      }
+      if (['CANCELED', 'FAILED', 'EXPIRED', 'AMBIGUOUS'].includes(record.state) && row.state !== 'failed')
+        return { ...row, state: 'failed' as const, protocolCommandId: record.commandId,
+          error: record.state === 'AMBIGUOUS' ? 'Protocol delivery is unconfirmed and will not be replayed.' : 'Protocol delivery retired; this input will not be replayed.' };
+      return row;
+    });
+    if (next.some((row, index) => row !== current[index])) await commit(next, false);
+    await publishHistory();
+  });
+}
 /** A later exact call proves receipt of an earlier tool response, never of a queued task. */
 function toolInputReceipt(entry: InputEntry, sessionId: string, conversationId: string, startedAt: number): InputEntry {
+  if (s7Authority.blocks(entry)) return entry;
   const deliveredAt = offered.get(entry.id);
   return entry.sessionId === sessionId && entry.conversationId === conversationId && entry.state === 'tool' &&
     deliveredAt !== undefined && startedAt > deliveredAt
@@ -1487,6 +1549,7 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
     const observedActivity = deliveryHooks?.activity?.(session);
     const activeToolTurn = session.activeTurnId ?? (observedActivity?.exact ? observedActivity.turnId : undefined);
     const prepareEntry = async (entry: InputEntry): Promise<InputEntry> => {
+      if (s7Authority.blocks(entry) || s7Authority.targetHeld(entry.conversationId)) return entry;
       if (entry.sessionId !== sessionId || entry.dueAt > Date.now()) return entry;
       if (entry.attachments?.length && entry.attachmentDelivery !== 'tool' && entry.delivery !== 'tool') return entry;
       if (entry.delivery === 'tool' && entry.toolTurnId !== activeToolTurn) return entry;
@@ -1557,6 +1620,7 @@ export function authorizeBrowserHelperRetry(id: string, sourceSessionId: string)
 /** Only a pre-send failure can be declared failed. An ambiguous click stays claimed. */
 export function failBrowserInput(id: string, owner: string, error: string): Promise<boolean> {
   return serial(async () => {
+    if (s7Authority.blocks({ id })) return false;
     const current = await load();
     const entry = current.find((row) => row.id === id && row.owner === owner && row.state === 'browser');
     if (!entry || companionOf(current, entry)) return false;

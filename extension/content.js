@@ -867,7 +867,7 @@
 
   function rememberUserSend() {
     if (!alive) return;
-    if (s6MutationOwned) return; // The synthetic specimen cannot acquire a Goal suffix.
+    if (s6MutationOwned || s7MutationOwned) return; // A Protocol-owned payload cannot acquire a Goal suffix.
     // Only the explicitly selected offline Goal backend changes the user prompt.
     const composer = CLF_DOM.composer();
     if (goalConfig?.backend === 'templates' && (goalConfig?.enabled === true || (!goalConfig?.own && !!goalConfig?.objective)) && goalConfig?.mode !== 'loop' && !desktopDecision) {
@@ -11627,6 +11627,70 @@
     }
   }
   // End S6 controlled document mutation.
+
+  // S7 continues inside acceptDesktopInput's original desktopInputBusy invocation.
+  const s7SeenCommands = new Set();
+  let s7MutationOwned = false;
+  async function executeS7Handoff(handoff, onTarget) {
+    const command = handoff?.command, e = handoff?.election, text = command?.payload?.text;
+    if (!desktopInputBusy || !e || handoff.kind !== 'S7_PROTOCOL_HANDOFF' || command.commandType !== 'SEND_MESSAGE' ||
+        command.commandId !== e.commandId || !/^cmd_s7_[0-9a-f-]{36}$/i.test(command.commandId) ||
+        command.idempotencyKey !== `s7_send:${command.commandId.slice(7)}` || command.conversationId !== e.targetConversationId ||
+        typeof text !== 'string' || !text.trim() || text.length > 4096 || /[\r\n\u2028\u2029]/.test(text) ||
+        new TextEncoder().encode(text).length > 16384 || s7SeenCommands.has(command.commandId) || s7SeenCommands.size >= 200) return false;
+    s7SeenCommands.add(command.commandId); s7MutationOwned = true;
+    let committed = false, leaseUntil = handoff.expiresAt;
+    const current = () => alive && desktopInputBusy && s7MutationOwned && onTarget() && epoch === e.navigationEpoch &&
+      CLF_DOM.conversationId() === e.targetConversationId && Date.now() < handoff.expiresAt && Date.now() < leaseUntil;
+    const safe = () => current() && !generating && !CLF_DOM.generating() && pendingTools === 0 && !goalBusy && !job?.busy &&
+      !CLF_DOM.securityOrAuthRequired() && CLF_DOM.composerVisible() && CLF_DOM.composerWritable() && !CLF_DOM.hasComposerAttachments();
+    const request = (action, extra = {}) => ask({ type: 's7_content', commandId: command.commandId,
+      navigationEpoch: e.navigationEpoch, action, ...extra });
+    const event = (eventType, extra = {}) => request('event', { eventType, ...extra });
+    try {
+      const registered = await documentReady;
+      if (registered?.documentId !== e.documentId || registered?.navigationEpoch !== e.navigationEpoch ||
+          !safe() || CLF_DOM.composer()?.textContent?.trim()) return false;
+      const claim = await request('claim');
+      if (claim?.ok !== true || !Number.isSafeInteger(claim.claimLeaseUntil) || !safe()) return false;
+      leaseUntil = claim.claimLeaseUntil;
+      if ((await event('COMMAND_CLAIMED'))?.accepted !== true || !safe()) return false;
+      const beforeNativeIds = CLF_DOM.messages().filter(row => row.role === 'user').map(row => row.id);
+      if (beforeNativeIds.length > 1000 || beforeNativeIds.some(id => typeof id !== 'string' || !id || id.length > 256)) return false;
+      const before = new Set(beforeNativeIds);
+      if ((await event('MESSAGE_SUBMIT_STARTED', { beforeNativeIds }))?.accepted !== true || !safe() ||
+          CLF_DOM.composer()?.textContent?.trim()) return false;
+      if (!CLF_DOM.insertPrompt(text, false) || !safe() || CLF_DOM.composer()?.textContent !== text) return false;
+      const verified = await request('verify');
+      const button = CLF_DOM.sendButton();
+      // This synchronous fence and sole direct native click have no intervening await.
+      if (verified?.ok !== true || !safe() || CLF_DOM.composer()?.textContent !== text ||
+          !button?.isConnected || button.disabled || button.getAttribute('aria-disabled') === 'true' || !button.getClientRects().length) return false;
+      button.click();
+      const proof = await waitPageView(async () => {
+        await askFiber();
+        if (!current()) return null;
+        const candidates = CLF_DOM.messages().filter(row => row.role === 'user' && !before.has(row.id));
+        if (candidates.length !== 1) return null;
+        const candidate = candidates[0], source = userMessageSource(candidate);
+        if (!source || source.canonical !== true || source.text !== text || source.attachments?.length ||
+            typeof candidate.id !== 'string' || !candidate.id.trim() || candidate.id.length > 256 || !candidate.node?.querySelectorAll) return null;
+        const native = [candidate.node, ...candidate.node.querySelectorAll('[data-message-id]')]
+          .filter(node => node.getAttribute('data-message-id') === candidate.id);
+        if (native.length !== 1) return null;
+        return { canonical: true, candidateCount: 1, attachmentCount: 0, conversationId: e.targetConversationId,
+          sourceText: source.text, nativeMessageId: candidate.id };
+      }, current, Math.max(1, Math.min(5000, leaseUntil - Date.now())));
+      if (!proof || !current()) return false;
+      committed = (await event('MESSAGE_COMMITTED', { payload: proof }))?.accepted === true;
+      return committed;
+    } catch { return false; }
+    finally {
+      if (!committed) await request('abort').catch(() => undefined);
+      s7MutationOwned = false;
+    }
+  }
+  // End S7 same-invocation document mutation.
   // The durable claim, never a project path/title guess, fences first tool evidence.
   let desktopProjectInput = null;
   function retireBoundProjectInput(claim, projectBound) {
@@ -11878,7 +11942,10 @@
         return false; // No claim, insertion or Send: queued input survives recovery.
       }
       if (!composer || !onTarget() || (!message.directTurn && ((!silencePickup && generating) || CLF_DOM.generating())) || !CLF_DOM.composerVisible()) return false;
-      const reply = await ask({ type: 'desktop_input', id: message.id, conversationId: target, requiresAuthorization: true });
+      const reply = await ask({ type: 'desktop_input', id: message.id, conversationId: target, requiresAuthorization: true,
+        ...(message.s7Candidate === true && !generating && !CLF_DOM.generating() && !goalBusy && !job?.busy &&
+          !composer.textContent?.trim() && !CLF_DOM.hasComposerAttachments() && !CLF_DOM.securityOrAuthRequired() ? { s7Ready: true } : {}) });
+      if (reply?.data?.s7) return await executeS7Handoff(reply.data.s7, onTarget);
       const input = reply?.data?.input;
       if (input?.silenceBoundary || input?.completedTurnId) { claimedSilence = input; sourceQuiet = true; }
       if (!input || !onTarget()) return false;
