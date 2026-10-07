@@ -24,7 +24,9 @@ import { attachmentSchema, validateInputAttachments, normalizeInputAttachments }
 import { MAX_CHATGPT_MESSAGE_CHARS } from '../../shared/user-prompt.js';
 import type { PromptLimits } from './prompt.js';
 import { recoveryMessage, recoveryBusyMs } from '../../shared/recovery.js';
-import { s7Authority, type S7Context, type S7Selection } from '../browser-transport/s7-authority.js';
+import { s7Authority, S7_PRECLAIM_PICKUP_MS, type S7Context, type S7Selection } from '../browser-transport/s7-authority.js';
+
+export const UNCLAIMED_BROWSER_MS = 60_000;
 
 export const inputArgs = z.object({
   provenance: z.object({ kind: z.enum(['ordinary-composer', 'generated', 'retry']), orchestratorRequested: z.boolean(),
@@ -446,9 +448,19 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
     // intent survives a later terminal observation/restart; legacy bound-chat
     // rows are ambiguous and cannot safely be reclassified from today's activity.
     if (row.state === 'queued' && row.mode === 'auto' && !row.opening && !row.finishOwner && !row.silenceBoundary &&
-        (row.transportIntent === 'browser' || (!row.transportIntent && !row.sessionId)) &&
-        Date.now() - Math.max(row.createdAt, row.dueAt) >= 60_000)
-      return { ...row, state: 'failed', error: 'Not sent: the browser did not pick up this message within 60 seconds.' };
+        (row.transportIntent === 'browser' || (!row.transportIntent && !row.sessionId))) {
+      const session = row.sessionId ? await getSession(row.sessionId) : null;
+      const timeoutMs = s7Authority.candidate(row, session) ? S7_PRECLAIM_PICKUP_MS : UNCLAIMED_BROWSER_MS;
+      if (Date.now() - Math.max(row.createdAt, row.dueAt) >= timeoutMs) {
+        return {
+          ...row,
+          state: 'failed',
+          error: timeoutMs === UNCLAIMED_BROWSER_MS
+            ? 'Not sent: the browser did not pick up this message within 60 seconds.'
+            : `Not sent: the browser did not pick up this message within ${timeoutMs / 60_000} minutes.`
+        };
+      }
+    }
     // Preparation can expire before Send. Once authorized, this exact claim owns
     // the uncertain outcome until receipt or explicit cancellation, regardless of
     // how long ChatGPT takes to assign its durable conversation identity.

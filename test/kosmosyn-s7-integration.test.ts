@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, it, expect, vi } from 'vitest';
+import { beforeEach, afterEach, it, expect, vi, describe } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -204,4 +204,119 @@ it('readiness expiring while the input claim waits cannot select durable authori
     expect((await claim).body).toEqual({ input: null });
     expect(s7Authority.records()).toEqual([]);
   } finally { clock.mockRestore(); spy.mockRestore(); }
+});
+
+describe('S7 pre-claim pickup deadline regression', () => {
+  it('A: S7 enabled + eligible candidate remains queued past 60s and later claim succeeds with S7 handoff', async () => {
+    await enabled();
+    const f = await offer();
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => start + 65_000);
+    try {
+      // 1. Candidate remains queued rather than failed
+      const listed = await input.listInputs();
+      const candidateRow = listed.find(r => r.id === f.row.id);
+      expect(candidateRow).toMatchObject({ id: f.row.id, state: 'queued' });
+      expect(candidateRow?.error).toBeUndefined();
+
+      // 2. Ledger remains empty during wait
+      expect(s7Authority.records()).toEqual([]);
+
+      // 3. No protocol command or Send authorization exists yet
+      expect(candidateRow?.protocolCommandId).toBeUndefined();
+      expect(candidateRow?.sendAuthorizedAt).toBeUndefined();
+
+      // 4. Browser wakes up at +65s, establishes readiness, and claims the same input UUID
+      const welcome = await post('/s7/hello', { emitterEpoch: 'background_original', hello: { type: 'HELLO', protocolVersion: 1,
+        extensionVersion: APP_VERSION, connectionGeneration: 0, capabilities: ['SEND_MESSAGE'] } });
+      const election = { commandId: `cmd_s7_${f.row.id}`, targetConversationId: f.conversationId, tabId: 7, documentId: 'document_original',
+        navigationEpoch: 3, connectionEpoch: welcome.body.connectionEpoch, backgroundEmitterEpoch: 'background_original' };
+      expect((await post('/s7/ready', { emitterEpoch: election.backgroundEmitterEpoch, ready: { type: 'READY',
+        connectionGeneration: 0, connectionEpoch: election.connectionEpoch, activeSessions: [], boundTabsCount: 1 } })).status).toBe(200);
+      const claimResult = await post('/input/claim', { id: f.row.id, owner: 'original_owner', conversationId: f.conversationId, requiresAuthorization: true,
+        s7Preflight: { election, uniqueDocuments: 1 } });
+      expect(claimResult.body.input).toBeNull();
+      expect(claimResult.body.s7).toBeDefined();
+      expect(claimResult.body.s7.command.commandId).toBe(`cmd_s7_${f.row.id}`);
+      expect(claimResult.body.s7.election).toEqual(election);
+
+      // 5. Exactly one S7 ledger record is created for that original UUID
+      const records = s7Authority.records();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.inputId).toBe(f.row.id);
+      expect(records[0]?.commandId).toBe(`cmd_s7_${f.row.id}`);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('B: Non-S7 control input with concrete model expires under 60-second rule', async () => {
+    await enabled();
+    const conversationId = randomUUID();
+    const session = await createSession({ title: 'Non-S7 control', conversationId, origin: { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
+    const row = await input.enqueueInput({
+      id: randomUUID(),
+      sessionId: session.id,
+      text: 'Explicit model input',
+      mode: 'auto',
+      dueAt: 0,
+      model: 'gpt-5-6',
+      reasoningEffort: null,
+      provenance: { kind: 'ordinary-composer', orchestratorRequested: false, modelChoice: 'explicit' }
+    });
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => start + 65_000);
+    try {
+      const listed = await input.listInputs();
+      const controlRow = listed.find(r => r.id === row.id);
+      expect(controlRow).toMatchObject({
+        id: row.id,
+        state: 'failed',
+        error: 'Not sent: the browser did not pick up this message within 60 seconds.'
+      });
+      expect(s7Authority.records()).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('C: S7 bounded-negative: unclaimed S7 candidate eventually fails at bound with empty ledger', async () => {
+    await enabled();
+    const f = await offer();
+    const start = Date.now();
+    // Exceed S7 pre-claim bound (185s > 180s)
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => start + 185_000);
+    try {
+      const listed = await input.listInputs();
+      const candidateRow = listed.find(r => r.id === f.row.id);
+      expect(candidateRow).toMatchObject({
+        id: f.row.id,
+        state: 'failed',
+        error: expect.stringContaining('Not sent: the browser did not pick up this message')
+      });
+      expect(s7Authority.records()).toEqual([]);
+      expect(candidateRow?.sendAuthorizedAt).toBeUndefined();
+      expect(candidateRow?.protocolCommandId).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('D: S7 OFF: candidate-shaped input does not gain extended timeout when S7 is disabled', async () => {
+    const f = await offer();
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => start + 65_000);
+    try {
+      const listed = await input.listInputs();
+      const candidateRow = listed.find(r => r.id === f.row.id);
+      expect(candidateRow).toMatchObject({
+        id: f.row.id,
+        state: 'failed',
+        error: 'Not sent: the browser did not pick up this message within 60 seconds.'
+      });
+      expect(s7Authority.records()).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });

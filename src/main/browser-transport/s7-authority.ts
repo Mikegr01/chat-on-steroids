@@ -10,6 +10,15 @@ import type { SessionSummary } from '../../shared/session.js';
 export const S7_LEDGER = 'kosmosyn-s7-authority';
 export const S7_MAX_BYTES = 1024 * 1024;
 export const S7_MAX_RECORDS = 200;
+/**
+ * Unclaimed browser queue deadline for eligible S7 candidates.
+ *
+ * Matches REVIVAL_DEADLINE_MS (3 minutes): slow browser page wakeups and cold-tab
+ * ChatGPT reloads routinely take between 60 and 90 seconds before the page helper can
+ * inspect turns and make the claim. S7 custody/election still occurs only upon claim;
+ * this bounds how long the candidate may wait for the browser without early failure.
+ */
+export const S7_PRECLAIM_PICKUP_MS = 3 * 60_000;
 export interface S7Gate { enabled: boolean; initialized: boolean }
 const epoch = z.string().min(1).max(128);
 export const s7ElectionSchema = z.object({ commandId: z.string().regex(/^cmd_s7_[0-9a-f-]{36}$/i),
@@ -61,20 +70,13 @@ function singleLine(text: string): boolean {
   return !!text.trim() && !/[\r\n\u2028\u2029]/.test(text) && text.length <= 4096 && Buffer.byteLength(text) <= 16384;
 }
 const uncertain = (r: S7Record) => ['PERSISTED', 'BLOCKED', 'DISPATCHED', 'CLAIMED', 'EXECUTING', 'AMBIGUOUS'].includes(r.state);
-function eligible(row: InputEntry, context: S7Context): boolean {
-  const p = row.provenance;
-  return p?.kind === 'ordinary-composer' && p.orchestratorRequested === false && p.modelChoice === 'current' &&
-    z.string().uuid().safeParse(row.id).success && !!row.sessionId && context.uniqueSession &&
-    context.session?.id === row.sessionId && context.session.conversationId === row.conversationId &&
-    context.session.origin?.kind === 'desktop' && !!row.conversationId && !row.opening &&
-    row.state === 'queued' && row.owner === null && row.mode === 'auto' && row.transportIntent === 'browser' &&
-    !row.requestedMode && !row.delivery && !row.attachmentDelivery && !row.loopAfterTurn && !row.afterTurn && !row.error &&
-    row.dueAt <= Date.now() && row.offeredAt === undefined && row.sendAuthorizedAt === undefined &&
-    !row.companionInputId && !context.companion && !row.images?.length && !row.attachments?.length && !row.toolImages?.length &&
-    row.model === null && row.reasoningEffort === null && (!row.automation || row.automation === 'off') && context.automationOff &&
-    !row.objective && !row.stages?.length && !row.finishOwner && !row.recovery && !row.silenceBoundary && !row.directTurn && !row.queuedTurn &&
-    (!row.purpose || row.purpose === 'user') && !row.lifetime && (!row.authoredSource || row.authoredSource === 'text') &&
-    row.deliveryText === row.text && singleLine(row.text);
+function eligible(row: InputEntry, context: S7Context, authority: S7Authority): boolean {
+  return authority.candidate(row, context.session) &&
+    context.uniqueSession &&
+    !context.companion &&
+    context.automationOff &&
+    row.dueAt <= Date.now() &&
+    row.deliveryText === row.text;
 }
 
 /** S7 has its own strict custody ledger. No transport pump, lease transfer or tombstone pruning. */
@@ -164,6 +166,27 @@ export class S7Authority {
       this.unsafeCustody();
   }
   private unsafeCustody(): boolean { return (this.loaded && !this.healthy) || (this.options.gate().initialized && !this.loaded); }
+  candidate(row: InputEntry, session?: SessionSummary | null): boolean {
+    if (!this.options.gate().enabled || !this.options.gate().initialized || this.unsafeCustody()) return false;
+    const p = row.provenance;
+    if (p?.kind !== 'ordinary-composer' || p.orchestratorRequested !== false || p.modelChoice !== 'current') return false;
+    if (row.model !== null || row.reasoningEffort !== null) return false;
+    if (!z.string().uuid().safeParse(row.id).success || !row.sessionId || !row.conversationId || row.opening) return false;
+    if (row.state !== 'queued' || row.owner !== null || row.mode !== 'auto' || row.transportIntent !== 'browser') return false;
+    if (row.requestedMode || row.delivery || row.attachmentDelivery || row.loopAfterTurn || row.afterTurn || row.error) return false;
+    if (row.offeredAt !== undefined || row.sendAuthorizedAt !== undefined || row.companionInputId) return false;
+    if ((row.images?.length ?? 0) > 0 || (row.attachments?.length ?? 0) > 0 || (row.toolImages?.length ?? 0) > 0) return false;
+    if (row.automation && row.automation !== 'off') return false;
+    if (row.objective || (row.stages?.length ?? 0) > 0 || row.finishOwner || row.recovery || row.silenceBoundary) return false;
+    if (row.directTurn || row.queuedTurn || (row.purpose && row.purpose !== 'user') || row.lifetime) return false;
+    if (row.authoredSource && row.authoredSource !== 'text') return false;
+    if ((row.deliveryText !== undefined && row.deliveryText !== row.text) || !singleLine(row.text)) return false;
+    if (session !== undefined) {
+      if (!session || session.id !== row.sessionId || session.conversationId !== row.conversationId) return false;
+      if (session.origin?.kind !== 'desktop') return false;
+    }
+    return true;
+  }
   targetHeld(target: string | null, reservation?: S7Reservation): boolean {
     return !!target && (this.unsafeCustody() || (this.reservation?.target === target && this.reservation !== reservation) || this.ledger.records.some(r => r.targetConversationId === target && uncertain(r)));
   }
@@ -176,12 +199,12 @@ export class S7Authority {
   release(reservation: S7Reservation): void { if (this.reservation === reservation) this.reservation = null; }
   select(row: InputEntry, context: S7Context, reservation?: S7Reservation): Promise<S7Selection> {
     const reserve = reservation === this.reservation && reservation?.inputId === row.id && reservation.target === row.conversationId
-      ? reservation : this.options.gate().enabled && eligible(row, context) ? this.reserve(row.id, row.conversationId!) : undefined;
+      ? reservation : this.options.gate().enabled && eligible(row, context, this) ? this.reserve(row.id, row.conversationId!) : undefined;
     if (reserve === null) return Promise.resolve({ kind: 'DEFER' });
     return this.withSettings<S7Selection>(async () => {
       if (this.ledger.records.some(r => r.inputId === row.id) || this.unsafeCustody()) return { kind: 'DEFER' };
       if (!await this.snapshotCurrent()) return { kind: 'DEFER' };
-      if (!this.options.gate().enabled || !eligible(row, context)) return { kind: 'LEGACY_AUTHORITY' };
+      if (!this.options.gate().enabled || !eligible(row, context, this)) return { kind: 'LEGACY_AUTHORITY' };
       if (!this.options.gate().initialized || !this.healthy || !context.idle || context.conflict ||
           !context.ready || context.uniqueDocuments !== 1 || !context.current() ||
           !s7ElectionSchema.safeParse(context.election).success || context.election.commandId !== `cmd_s7_${row.id}` ||
