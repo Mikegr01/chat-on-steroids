@@ -184,7 +184,7 @@ function paintComposerChoices(): void {
     const use = el('button', choices.length ? 'model-choice' : 'btn', () => t("ChatGPT’s current model")) as HTMLButtonElement;
     use.type = 'button'; use.dataset.useCurrentModel = ''; use.dataset.keepMenu = 'true';
     use.setAttribute('aria-pressed', String(currentModelChosen()));
-    ui(use, 'title', () => t("Send with the model ChatGPT already uses."));
+    ui(use, 'title', () => t("Use ChatGPT’s current model"));
     use.addEventListener('click', event => {
       event.stopPropagation();
       useCurrentModel = true;
