@@ -18,8 +18,8 @@ let composerContext: { scope: string | null; observation: ObservedSelection | nu
  *
  * Some plans (ChatGPT Go and Free, #104) show no model picker at all, so discovery can never
  * produce a list and Send refused every message. Nothing is guessed or switched silently: this is
- * offered only while no account list is readable, the person has to pick it, and a readable list
- * takes over again the moment one exists.
+ * offered alongside account choices, the person has to pick it, and the choice belongs to the
+ * active composer scope.
  */
 let useCurrentModel = false;
 type SendModel = { model: string | null; reasoningEffort: ReasoningEffort | null };
@@ -28,7 +28,7 @@ function currentModelOffered(): boolean {
   return !catalog.models.length && catalog.state !== 'pending' && (catalog.state === 'unavailable' || !!catalog.error);
 }
 function currentModelChosen(): boolean {
-  return useCurrentModel && currentModelOffered();
+  return useCurrentModel;
 }
 const pairs = [['composerModel', 'composerReasoning'], ['workerModel', 'workerReasoning'], ['helperModel', 'helperReasoning']] as const;
 const effortNames: Record<string, string> = { none: "Instant", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", pro: 'Pro' } satisfies Record<ReasoningEffort, string>;
@@ -55,6 +55,7 @@ function paintComposerContext(): void {
 /** Scope comes from the caller's session + selection generation; no browser mutation. */
 export function applyComposerSessionModel(scope: string | null, observation: ObservedSelection | null): void {
   if (!composerContext || composerContext.scope !== scope) {
+    useCurrentModel = false;
     composerContext = { scope, observation, edited: false };
     if (scope === null) paintPair('composerModel', 'composerReasoning', '', '');
   } else if (observation && (!composerContext.observation || observation.observedAt >= composerContext.observation.observedAt)) {
@@ -172,45 +173,47 @@ function paintComposerChoices(): void {
   const selected = $<HTMLSelectElement>('composerModel');
   const effort = $<HTMLSelectElement>('composerReasoning');
   const choices = composerModels();
-  const signature = JSON.stringify([catalog.state, choices, selected.value, effort.value]);
+  const signature = JSON.stringify([catalog.state, choices, selected.value, effort.value, useCurrentModel]);
   if (models.dataset.signature === signature) return;
   models.dataset.signature = signature;
   models.replaceChildren();
   powers.replaceChildren();
   const title = document.getElementById('composerPowerTitle');
   const subtitle = document.getElementById('composerPowerModel');
+  if (choices.length || currentModelOffered() || currentModelChosen()) {
+    const use = el('button', choices.length ? 'model-choice' : 'btn', () => t("ChatGPT’s current model")) as HTMLButtonElement;
+    use.type = 'button'; use.dataset.useCurrentModel = ''; use.dataset.keepMenu = 'true';
+    use.setAttribute('aria-pressed', String(currentModelChosen()));
+    ui(use, 'title', () => t("Send with the model ChatGPT already uses."));
+    use.addEventListener('click', event => {
+      event.stopPropagation();
+      useCurrentModel = true;
+      if (composerContext) composerContext.edited = true;
+      paintStatus();
+    });
+    models.append(use);
+  }
+  if (currentModelChosen()) {
+    if (title) ui(title, 'textContent', () => t("ChatGPT’s current model"));
+    if (subtitle) ui(subtitle, 'textContent', () => t("Sent without choosing a model"));
+  }
   if (!choices.length) {
-    if (currentModelChosen()) {
-      if (title) ui(title, 'textContent', () => t("ChatGPT’s current model"));
-      if (subtitle) ui(subtitle, 'textContent', () => t("Sent without choosing a model"));
-      return;
-    }
-    if (title) ui(title, 'textContent', () => catalog.state === 'pending' ? t("Loading models…") : t("Models unavailable"));
-    if (subtitle) ui(subtitle, 'textContent', () => catalog.state === 'pending' ? t("Reading your ChatGPT account") : t("Reload models"));
-    if (currentModelOffered()) {
-      const use = el('button', 'btn', () => t("Use ChatGPT’s current model")) as HTMLButtonElement;
-      use.type = 'button';
-      use.dataset.useCurrentModel = '';
-      ui(use, 'title', () => t("Your ChatGPT plan shows no model picker. Send with the model ChatGPT already uses."));
-      use.addEventListener('click', () => {
-        useCurrentModel = true;
-        if (composerContext) composerContext.edited = true;
-        paintStatus();
-      });
-      powers.append(use);
+    if (!currentModelChosen()) {
+      if (title) ui(title, 'textContent', () => catalog.state === 'pending' ? t("Loading models…") : t("Models unavailable"));
+      if (subtitle) ui(subtitle, 'textContent', () => catalog.state === 'pending' ? t("Reading your ChatGPT account") : t("Reload models"));
     }
     return;
   }
   for (const choice of distinctModelChoices(choices)) {
     const button = el('button', 'model-choice') as HTMLButtonElement;
     button.type = 'button'; button.dataset.keepMenu = 'true'; button.dataset.model = choice.id;
-    button.setAttribute('aria-pressed', String(choice.id === selected.value));
+    button.setAttribute('aria-pressed', String(!currentModelChosen() && choice.id === selected.value));
     button.append(el('span', '', choice.label), icon('i-check'));
     button.addEventListener('click', event => {
       // Repainting the choices detaches this button before the document listener.
       // Keep the model menu open without giving it a second selection authority.
       event.stopPropagation();
-      if (selected.value === choice.id) return;
+      if (!currentModelChosen() && selected.value === choice.id) return;
       const focused = document.activeElement === button;
       selected.value = choice.id;
       selected.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -219,6 +222,7 @@ function paintComposerChoices(): void {
     models.append(button);
   }
   const supported = choices.find(choice => choice.id === selected.value)?.efforts ?? [];
+  if (currentModelChosen()) return;
   if (title) ui(title, 'textContent', () => t('Thinking effort'));
   const current = supported.findIndex(power => power === effort.value);
   if (subtitle) ui(subtitle, 'textContent', () => current < 0 ? t('Previous selection unavailable') : effortLabel(effort.value));
@@ -228,7 +232,7 @@ function paintComposerChoices(): void {
     effort.value = power;
     if (subtitle) ui(subtitle, 'textContent', () => effortLabel(power));
     paintComposerLabel();
-    models.dataset.signature = JSON.stringify([catalog.state, choices, selected.value, effort.value]);
+    models.dataset.signature = JSON.stringify([catalog.state, choices, selected.value, effort.value, useCurrentModel]);
   };
   // One effort (an Instant model) is not a choice: no slider, just its name. A stale saved
   // effort still needs one explicit confirmation before Send may use this model.
@@ -300,7 +304,7 @@ function paintComposerChoices(): void {
 /** Admission guard for desktop sends: a stale selection is not permission to use defaults. */
 /** What Send uses: the confirmed pair, or the explicitly chosen "ChatGPT's current model". */
 export function composerSendModel(): SendModel | null {
-  return confirmedComposerModel() ?? (currentModelChosen() ? { ...CURRENT_MODEL } : null);
+  return currentModelChosen() ? { ...CURRENT_MODEL } : confirmedComposerModel();
 }
 
 export function confirmedComposerModel(): { model: string; reasoningEffort: ReasoningEffort } | null {
@@ -315,12 +319,11 @@ function paintComposerLabel(): void {
   // Display the same admission decision as Send, including discovery and removed efforts.
   const confirmed = confirmedComposerModel();
   const modelLabel = confirmed ? catalog.models.find(model => model.id === confirmed.model)!.label : '';
-  const label = () => confirmed
-    ? chatModelDisplayLabel(modelLabel, confirmed.reasoningEffort, effortLabel(confirmed.reasoningEffort))
-    : currentModelChosen() ? t("ChatGPT’s current model")
+  const label = () => currentModelChosen() ? t("ChatGPT’s current model")
+    : confirmed ? chatModelDisplayLabel(modelLabel, confirmed.reasoningEffort, effortLabel(confirmed.reasoningEffort))
     : catalog.state === 'pending' ? t("Loading models…") : t("Select model");
   const node = $('composerModelLabel');
-  if (confirmed) {
+  if (confirmed && !currentModelChosen()) {
     const pro = confirmed.reasoningEffort === 'pro';
     node.replaceChildren(el('strong', '', pro ? label : modelLabel));
     if (!pro) node.append(uiText(() => ` · ${effortLabel(confirmed.reasoningEffort)}`));
@@ -378,8 +381,8 @@ function discoverModels(): Promise<void> {
 }
 
 export async function ensureComposerModel(refresh = false): Promise<SendModel | null> {
-  if (!refresh && catalog.models.length && catalog.state !== 'pending') return confirmedComposerModel();
   if (!refresh && currentModelChosen()) return { ...CURRENT_MODEL };
+  if (!refresh && catalog.models.length && catalog.state !== 'pending') return confirmedComposerModel();
   const ready = new Promise<void>(resolve => {
     const finish = () => { clearTimeout(timer); catalogWaiters.delete(check); resolve(); };
     const check = () => { if (catalog.state === 'ready' || catalog.state === 'unavailable') finish(); };
@@ -388,7 +391,7 @@ export async function ensureComposerModel(refresh = false): Promise<SendModel | 
   });
   await discoverModels();
   await ready;
-  return catalog.state === 'ready' && !catalog.error ? confirmedComposerModel() : currentModelChosen() ? { ...CURRENT_MODEL } : null;
+  return currentModelChosen() ? { ...CURRENT_MODEL } : catalog.state === 'ready' && !catalog.error ? confirmedComposerModel() : null;
 }
 
 export function paintSpecificModelSelect(id: string, value?: string): void {
@@ -439,14 +442,20 @@ export function initChatModels(onPaint?: () => void): void {
   });
   for (const [modelId, effortId] of pairs) {
     document.getElementById(modelId)?.addEventListener('change', () => {
-      if (modelId === 'composerModel' && composerContext) composerContext.edited = true;
+      if (modelId === 'composerModel') {
+        useCurrentModel = false;
+        if (composerContext) composerContext.edited = true;
+      }
       const model = $<HTMLSelectElement>(modelId);
       const supported = catalog.models.find(item => item.id === model.value)?.efforts ?? [];
       paintPair(modelId, effortId, model.value, supported.includes('high') ? 'high' : supported[0] ?? '');
       paintStatus();
     });
     document.getElementById(effortId)?.addEventListener('change', () => {
-      if (effortId === 'composerReasoning' && composerContext) composerContext.edited = true;
+      if (effortId === 'composerReasoning') {
+        useCurrentModel = false;
+        if (composerContext) composerContext.edited = true;
+      }
       paintStatus();
     });
   }

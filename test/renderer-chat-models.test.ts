@@ -453,7 +453,7 @@ it.each(['5.6', 'gpt-5.6-sol', 'GPT-5.6 Sol', 'gpt-5-6-thinking'])('keeps saved 
   check(); receive({ state: 'ready', models: [...models].reverse() }); check();
 });
 
-it('offers ChatGPT’s current model only when no account list is readable, and only on an explicit choice (#104)', async () => {
+it('offers ChatGPT’s current model without a readable list, and keeps the explicit choice when a list arrives (#104)', async () => {
   dom = new JSDOM(await readFile('src/renderer/index.html', 'utf8'));
   vi.stubGlobal('window', dom.window); vi.stubGlobal('document', dom.window.document);
   let receive!: (catalog: any) => void;
@@ -475,10 +475,41 @@ it('offers ChatGPT’s current model only when no account list is readable, and 
   expect(await ensureComposerModel()).toEqual({ model: null, reasoningEffort: null });
   expect(confirmedComposerModel(), 'the confirmed-pair contract is unchanged').toBeNull();
   expect(dom.window.document.getElementById('composerModelLabel')!.textContent).toBe('ChatGPT’s current model');
-  // A readable list takes over again at once.
+  // A readable list must not revoke the user's explicit choice.
   receive({ state: 'ready', requestedAt: 3, observedAt: 4, models: [{ id: 'gpt-6', label: 'GPT-6', efforts: ['high'] }] });
-  expect(composerSendModel()).toEqual({ model: 'gpt-6', reasoningEffort: 'high' });
-  expect(button()).toBeNull();
+  expect(composerSendModel()).toEqual({ model: null, reasoningEffort: null });
+  expect(button()).not.toBeNull();
+});
+
+it('offers explicit current model with a healthy catalog, preserves it on refresh, and exits on model selection or scope change', async () => {
+  dom = new JSDOM(await readFile('src/renderer/index.html', 'utf8'));
+  vi.stubGlobal('window', dom.window); vi.stubGlobal('document', dom.window.document);
+  let receive!: (catalog: any) => void;
+  const models = [{ id: 'catalog-a', label: 'Catalog A', efforts: ['high'] },
+    { id: 'catalog-b', label: 'Catalog B', efforts: ['medium'] }];
+  Object.assign(dom.window, { api: { getChatModels: async () => ({ ok: true, data: { state: 'ready', observedAt: 1, models } }),
+    onChatModelsChanged: (listener: typeof receive) => { receive = listener; } } });
+  const { initChatModels, applyChatModels, applyComposerSessionModel, composerSendModel, ensureComposerModel } = await import('../src/renderer/chat-models.js');
+  initChatModels(); applyChatModels({ multiAgent: {}, goal: {} } as Config); await Promise.resolve();
+  applyComposerSessionModel('session-a:1', { model: 'catalog-a', reasoningEffort: 'high', observedAt: 1 });
+  const current = () => dom.window.document.querySelector<HTMLButtonElement>('[data-use-current-model]');
+  expect(current()).not.toBeNull();
+  expect(current()!.getAttribute('aria-pressed')).toBe('false');
+  expect(composerSendModel()).toEqual({ model: 'catalog-a', reasoningEffort: 'high' });
+  current()!.click();
+  expect(current()!.getAttribute('aria-pressed')).toBe('true');
+  expect(composerSendModel()).toEqual({ model: null, reasoningEffort: null });
+  expect(await ensureComposerModel()).toEqual({ model: null, reasoningEffort: null });
+  expect(dom.window.document.getElementById('composerModelLabel')!.textContent).toBe('ChatGPT’s current model');
+  receive({ state: 'ready', observedAt: 2, models: [...models].reverse() });
+  expect(composerSendModel()).toEqual({ model: null, reasoningEffort: null });
+  expect(current()!.getAttribute('aria-pressed')).toBe('true');
+  dom.window.document.querySelector<HTMLButtonElement>('[data-model="catalog-b"]')!.click();
+  expect(composerSendModel()).toEqual({ model: 'catalog-b', reasoningEffort: 'medium' });
+  current()!.click();
+  applyComposerSessionModel('session-b:2', { model: 'catalog-a', reasoningEffort: 'high', observedAt: 3 });
+  expect(composerSendModel()).toEqual({ model: 'catalog-a', reasoningEffort: 'high' });
+  expect(current()!.getAttribute('aria-pressed')).toBe('false');
 });
 
 it('glides the effort thumb, picks the nearest effort, settles on release and steps by keys', async () => {

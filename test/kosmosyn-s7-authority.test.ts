@@ -46,6 +46,19 @@ describe('S7 selective cross-transport ownership', () => {
     const f = await fixture(); delete f.row.provenance;
     expect((await f.authority.select(f.row, f.context)).kind).toBe('LEGACY_AUTHORITY');
   });
+  it('admits only the ordinary current/null/null composer boundary', async () => {
+    const current = await fixture();
+    expect((await current.authority.select(current.row, current.context)).kind).toBe('PROTOCOL_AUTHORITY');
+    for (const patch of [
+      { model: 'catalog-model', reasoningEffort: 'high', provenance: { kind: 'ordinary-composer', orchestratorRequested: false, modelChoice: 'explicit' } },
+      { provenance: { kind: 'ordinary-composer', orchestratorRequested: false, modelChoice: 'explicit' } },
+      { provenance: { kind: 'ordinary-composer', orchestratorRequested: true, modelChoice: 'current' } }
+    ]) {
+      const f = await fixture(); Object.assign(f.row, patch);
+      expect((await f.authority.select(f.row, f.context)).kind).toBe('LEGACY_AUTHORITY');
+      expect(f.disk().records).toHaveLength(0);
+    }
+  });
   it('orchestrator intent excludes an ordinary-looking send', async () => {
     const f = await fixture(); f.row.provenance.orchestratorRequested = true;
     expect((await f.authority.select(f.row, f.context)).kind).toBe('LEGACY_AUTHORITY');

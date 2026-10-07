@@ -329,6 +329,25 @@ async function boot(events: SessionEvent[], selectExisting = true, pausedHelpers
   };
 }
 
+it('submits explicit current-model and concrete composer choices with their matching provenance', async () => {
+  const { w, live } = await boot([]);
+  const current = w.document.querySelector<HTMLButtonElement>('[data-use-current-model]');
+  expect(current).not.toBeNull();
+  current!.click();
+  const input = w.document.getElementById('chatInput') as HTMLTextAreaElement;
+  input.value = 'Send with the current model';
+  w.document.getElementById('composer')!.dispatchEvent(new w.Event('submit', { cancelable: true }));
+  await settle();
+  expect(live.sent[0]).toMatchObject({ model: null, reasoningEffort: null,
+    provenance: { kind: 'ordinary-composer', orchestratorRequested: false, modelChoice: 'current' } });
+  w.document.querySelector<HTMLButtonElement>('[data-model="gpt-5.6-sol"]')!.click();
+  input.value = 'Send with the selected model';
+  w.document.getElementById('composer')!.dispatchEvent(new w.Event('submit', { cancelable: true }));
+  await settle();
+  expect(live.sent[1]).toMatchObject({ model: 'gpt-5.6-sol', reasoningEffort: 'high',
+    provenance: { kind: 'ordinary-composer', orchestratorRequested: false, modelChoice: 'explicit' } });
+});
+
 it('makes parent and worker session selectors keyboard-focusable and activates them with Enter/Space', async () => {
   const parent: SessionSummary = { ...summary([]), id: 'parent-session', title: 'Parent', conversationId: 'parent-chat', chatIds: ['parent-chat'] };
   const worker: SessionSummary = { ...summary([]), id: 'worker-session', title: 'Worker', conversationId: 'worker-chat', chatIds: ['worker-chat'],
