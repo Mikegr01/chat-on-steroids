@@ -44,7 +44,7 @@ import { pluginRefreshPublications } from './plugin-refresh.js';
  */
 
 import path from 'node:path';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import {
   CAPABILITIES,
@@ -456,10 +456,10 @@ async function buildState(): Promise<AppState> {
 }
 
 /** Wraps a handler so a thrown error becomes a message the UI can show. */
-function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void {
-  ipcMain.handle(channel, async (_event, payload: unknown) => {
+function handle<T>(channel: string, fn: (payload: unknown, event: IpcMainInvokeEvent) => Promise<T>): void {
+  ipcMain.handle(channel, async (event, payload: unknown) => {
     try {
-      return { ok: true as const, data: await fn(payload) };
+      return { ok: true as const, data: await fn(payload, event) };
     } catch (err) {
       const message =
         err instanceof SandboxError || err instanceof z.ZodError
@@ -472,6 +472,26 @@ function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void 
       return { ok: false as const, error: message };
     }
   });
+}
+
+function s7IpcOrigin(event: IpcMainInvokeEvent): string {
+  try {
+    const url = new URL(event?.senderFrame?.url ?? '');
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.origin;
+  } catch { /* Tests and local file renderers have no usable web origin. */ }
+  return 'renderer-ipc';
+}
+
+function auditS7Transition(
+  transition: 'initialize' | 'enable' | 'disable',
+  prior: Config['kosmosynS7'],
+  result: Config['kosmosynS7'],
+  source: string,
+  success: boolean
+): void {
+  try {
+    logInfo(`S7_OPERATOR_TRANSITION ${JSON.stringify({ transition, prior, result, timestamp: new Date().toISOString(), source, success })}`);
+  } catch { /* Logging cannot change the result of an operator control. */ }
 }
 
 export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall: () => void): void {
@@ -523,15 +543,49 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     z.undefined().parse(payload);
     return getKosmosynS7State();
   });
-  handle('kosmosynS7:initialize', async payload => {
+  handle('kosmosynS7:initialize', async (payload, event) => {
     z.undefined().parse(payload);
-    try { return await initializeKosmosynS7(); }
-    catch { throw new Error('S7 initialization failed. Check custody and retry.'); }
+    const prior = await getKosmosynS7State();
+    const source = s7IpcOrigin(event);
+    try {
+      if (!prior.initialized) {
+        const { response } = await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Initialize Kosmosyn S7?',
+          message: 'Initialize Kosmosyn S7?',
+          detail: 'This permanently initializes S7 custody for this installation. Initialization cannot be undone.\n\nS7 will remain OFF after initialization and must be enabled separately.',
+          buttons: ['Initialize S7', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true
+        });
+        if (response !== 0) {
+          const result = await getKosmosynS7State();
+          auditS7Transition('initialize', prior, result, source, false);
+          return result;
+        }
+      }
+      const result = await initializeKosmosynS7();
+      auditS7Transition('initialize', prior, result, source, true);
+      return result;
+    } catch {
+      auditS7Transition('initialize', prior, await getKosmosynS7State(), source, false);
+      throw new Error('S7 initialization failed. Check custody and retry.');
+    }
   });
-  handle('kosmosynS7:set-enabled', async payload => {
+  handle('kosmosynS7:set-enabled', async (payload, event) => {
     const enabled = z.boolean().parse(payload);
-    try { return await setKosmosynS7Enabled(enabled); }
-    catch { throw new Error('S7 control failed. Check initialization and custody.'); }
+    const prior = await getKosmosynS7State();
+    const source = s7IpcOrigin(event);
+    const transition = enabled ? 'enable' : 'disable';
+    try {
+      const result = await setKosmosynS7Enabled(enabled);
+      auditS7Transition(transition, prior, result, source, true);
+      return result;
+    } catch {
+      auditS7Transition(transition, prior, await getKosmosynS7State(), source, false);
+      throw new Error('S7 control failed. Check initialization and custody.');
+    }
   });
 
   handle('settings:save', async (payload) => {

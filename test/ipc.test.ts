@@ -20,7 +20,10 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: class {},
   clipboard: { readText: () => '', writeText: () => undefined },
-  dialog: { showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })) },
+  dialog: {
+    showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })),
+    showMessageBox: vi.fn(async () => ({ response: 1, checkboxChecked: false }))
+  },
   shell: { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => '') },
   nativeTheme: { themeSource: 'system' },
   safeStorage: {
@@ -111,6 +114,7 @@ it('offers strict dedicated S7 controls while ordinary Settings cannot initializ
     }
     wake.mockClear();
     expect(await call('kosmosynS7:state')).toEqual({ ok: true, data: { enabled: false, initialized: false } });
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0, checkboxChecked: false });
     expect(await call('kosmosynS7:initialize')).toEqual({ ok: true, data: { enabled: false, initialized: true } });
     expect(await call('kosmosynS7:set-enabled', true)).toEqual({ ok: true, data: { enabled: true, initialized: true } });
     expect(await call('kosmosynS7:initialize')).toEqual({ ok: true, data: { enabled: true, initialized: true } });
@@ -122,6 +126,83 @@ it('offers strict dedicated S7 controls while ordinary Settings cannot initializ
     expect(await call('kosmosynS7:set-enabled', false)).toMatchObject({ ok: true });
   } finally {
     wake.mockRestore();
+    await fs.writeFile(path.join(dir, 'config.json'), baseline); await loadConfig();
+    await fs.rm(ledger, { force: true }); await s7Authority.recover();
+  }
+});
+
+it('requires an explicit native confirmation before irreversible S7 initialization', async () => {
+  const { loadConfig } = await import('../src/main/config.js');
+  const { s7Authority, S7_LEDGER } = await import('../src/main/browser-transport/s7-authority.js');
+  const ledger = path.join(dir, 'state', `${S7_LEDGER}.json`);
+  const baseline = await fs.readFile(path.join(dir, 'config.json'));
+  const call = (channel: string, payload?: unknown) => handlers.get(channel)!(null, payload) as Promise<any>;
+  vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 1, checkboxChecked: false });
+  try {
+    expect(await call('kosmosynS7:state')).toMatchObject({ data: { initialized: false, enabled: false } });
+    expect(await call('state:get')).toMatchObject({ ok: true });
+    expect(await call('kosmosynS7:initialize')).toMatchObject({ data: { initialized: false, enabled: false } });
+    expect(dialog.showMessageBox).toHaveBeenCalledOnce();
+    expect(JSON.stringify(vi.mocked(dialog.showMessageBox).mock.calls[0])).toMatch(/permanent|irreversible/i);
+    expect(getConfig().kosmosynS7).toEqual({ initialized: false, enabled: false });
+    await expect(fs.access(ledger)).rejects.toThrow();
+  } finally {
+    vi.mocked(dialog.showMessageBox).mockReset();
+    await fs.writeFile(path.join(dir, 'config.json'), baseline); await loadConfig();
+    await fs.rm(ledger, { force: true }); await s7Authority.recover();
+  }
+});
+
+it('keeps confirmed initialization OFF and requires a separate enable', async () => {
+  const { loadConfig } = await import('../src/main/config.js');
+  const { s7Authority, S7_LEDGER } = await import('../src/main/browser-transport/s7-authority.js');
+  const ledger = path.join(dir, 'state', `${S7_LEDGER}.json`);
+  const baseline = await fs.readFile(path.join(dir, 'config.json'));
+  const call = (channel: string, payload?: unknown) => handlers.get(channel)!(null, payload) as Promise<any>;
+  vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 0, checkboxChecked: false });
+  try {
+    expect(await call('kosmosynS7:initialize')).toMatchObject({ data: { initialized: true, enabled: false } });
+    expect(dialog.showMessageBox).toHaveBeenCalledOnce();
+    expect(await call('kosmosynS7:state')).toMatchObject({ data: { initialized: true, enabled: false } });
+    expect(await call('kosmosynS7:set-enabled', true)).toMatchObject({ data: { initialized: true, enabled: true } });
+    expect(await call('kosmosynS7:set-enabled', false)).toMatchObject({ data: { initialized: true, enabled: false } });
+  } finally {
+    vi.mocked(dialog.showMessageBox).mockReset();
+    await fs.writeFile(path.join(dir, 'config.json'), baseline); await loadConfig();
+    await fs.rm(ledger, { force: true }); await s7Authority.recover();
+  }
+});
+
+it('records initialize, enable and disable with prior/result, origin, time and outcome', async () => {
+  const { loadConfig } = await import('../src/main/config.js');
+  const { s7Authority, S7_LEDGER } = await import('../src/main/browser-transport/s7-authority.js');
+  const { getLog } = await import('../src/main/logger.js');
+  const ledger = path.join(dir, 'state', `${S7_LEDGER}.json`);
+  const baseline = await fs.readFile(path.join(dir, 'config.json'));
+  const call = (channel: string, payload?: unknown) => handlers.get(channel)!(null, payload) as Promise<any>;
+  vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 0, checkboxChecked: false });
+  const before = getLog().length;
+  try {
+    expect(await call('kosmosynS7:initialize')).toMatchObject({ ok: true });
+    expect(await call('kosmosynS7:set-enabled', true)).toMatchObject({ ok: true });
+    expect(await call('kosmosynS7:set-enabled', false)).toMatchObject({ ok: true });
+    await fs.writeFile(ledger, '{invalid custody');
+    expect(await call('kosmosynS7:set-enabled', true)).toMatchObject({ ok: false });
+    const audit = getLog().slice(before).filter(entry => entry.message.startsWith('S7_OPERATOR_TRANSITION '))
+      .map(entry => JSON.parse(entry.message.slice('S7_OPERATOR_TRANSITION '.length)));
+    expect(audit).toHaveLength(4);
+    expect(audit.map(entry => entry.transition)).toEqual(['initialize', 'enable', 'disable', 'enable']);
+    for (const entry of audit) {
+      expect(entry.prior).toEqual(expect.objectContaining({ initialized: expect.any(Boolean), enabled: expect.any(Boolean) }));
+      expect(entry.result).toEqual(expect.objectContaining({ initialized: expect.any(Boolean), enabled: expect.any(Boolean) }));
+      expect(entry.timestamp).toEqual(expect.any(String));
+      expect(entry.source).toEqual(expect.any(String));
+      expect(entry.success).toEqual(expect.any(Boolean));
+    }
+    expect(audit.map(entry => entry.success)).toEqual([true, true, true, false]);
+    expect(audit[3].result).toEqual({ initialized: true, enabled: false });
+  } finally {
+    vi.mocked(dialog.showMessageBox).mockReset();
     await fs.writeFile(path.join(dir, 'config.json'), baseline); await loadConfig();
     await fs.rm(ledger, { force: true }); await s7Authority.recover();
   }
