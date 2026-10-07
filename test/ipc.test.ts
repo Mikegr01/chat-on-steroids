@@ -86,6 +86,47 @@ const removeRoot = (payload: unknown): Promise<any> => handlers.get('roots:remov
 const sessionEvents = (payload: unknown): Promise<any> => handlers.get('sessions:events')!(null, payload) as Promise<any>;
 const sessionList = (): Promise<any> => handlers.get('sessions:list')!(null, undefined) as Promise<any>;
 
+it('offers strict dedicated S7 controls while ordinary Settings cannot initialize or enable them', async () => {
+  const { loadConfig } = await import('../src/main/config.js');
+  const { s7Authority, S7_LEDGER } = await import('../src/main/browser-transport/s7-authority.js');
+  const baseline = await fs.readFile(path.join(dir, 'config.json'));
+  const ledger = path.join(dir, 'state', `${S7_LEDGER}.json`);
+  const call = (channel: string, payload?: unknown) => handlers.get(channel)!(null, payload) as Promise<any>;
+  const wake = vi.spyOn(await import('../src/main/browser-wake.js'), 'wakeBrowserWork');
+  const commands = pendingCommands();
+  try {
+    expect([...handlers.keys()].filter(key => key.startsWith('kosmosynS7:')).sort()).toEqual([
+      'kosmosynS7:initialize', 'kosmosynS7:set-enabled', 'kosmosynS7:state'
+    ]);
+    for (const channel of ['kosmosynS7:state', 'kosmosynS7:initialize']) {
+      for (const payload of [null, false, {}, { initialized: true }, 'initialize']) expect(await call(channel, payload)).toMatchObject({ ok: false });
+    }
+    for (const payload of [undefined, null, 1, 'true', {}, { enabled: true }, [true]]) expect(await call('kosmosynS7:set-enabled', payload)).toMatchObject({ ok: false });
+    expect(await call('kosmosynS7:set-enabled', true)).toMatchObject({ ok: false });
+    const base = getConfig();
+    for (const gate of [{ enabled: false, initialized: true }, { enabled: true, initialized: true }]) {
+      await save({ ...base, kosmosynS7: gate }, { ...base, kosmosynS7: gate });
+      expect(getConfig().kosmosynS7).toEqual({ enabled: false, initialized: false });
+      await expect(fs.access(ledger)).rejects.toThrow();
+    }
+    wake.mockClear();
+    expect(await call('kosmosynS7:state')).toEqual({ ok: true, data: { enabled: false, initialized: false } });
+    expect(await call('kosmosynS7:initialize')).toEqual({ ok: true, data: { enabled: false, initialized: true } });
+    expect(await call('kosmosynS7:set-enabled', true)).toEqual({ ok: true, data: { enabled: true, initialized: true } });
+    expect(await call('kosmosynS7:initialize')).toEqual({ ok: true, data: { enabled: true, initialized: true } });
+    expect(await call('kosmosynS7:set-enabled', false)).toEqual({ ok: true, data: { enabled: false, initialized: true } });
+    expect(pendingCommands()).toEqual(commands); expect(wake).not.toHaveBeenCalled();
+    await fs.writeFile(ledger, '{broken');
+    expect(await call('kosmosynS7:set-enabled', true)).toMatchObject({ ok: false });
+    expect(await call('kosmosynS7:state')).toMatchObject({ data: { enabled: false, initialized: true } });
+    expect(await call('kosmosynS7:set-enabled', false)).toMatchObject({ ok: true });
+  } finally {
+    wake.mockRestore();
+    await fs.writeFile(path.join(dir, 'config.json'), baseline); await loadConfig();
+    await fs.rm(ledger, { force: true }); await s7Authority.recover();
+  }
+});
+
 it('saves port choices, merges stale snapshots and serializes concurrent port edits', async () => {
   const ports = await import('../src/main/bridge-ports.js');
   const bridge = await import('../src/main/bridge.js');

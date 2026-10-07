@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 
 const { invoke, expose, getPath } = vi.hoisted(() => ({
   invoke: vi.fn(async (channel: string, payload: any) => ({ ok: true, data: channel === 'sessions:dropFiles'
@@ -11,6 +11,23 @@ vi.mock('electron', () => ({
   ipcRenderer: { invoke },
   webUtils: { getPathForFile: getPath }
 }));
+
+beforeEach(() => { vi.resetModules(); invoke.mockClear(); expose.mockClear(); });
+
+it('exposes only three dedicated S7 methods, each fixed to one channel', async () => {
+  await import('../src/preload/index.js');
+  const api = expose.mock.calls[0]![1]; invoke.mockClear();
+  expect(Object.keys(api).filter(key => /S7/i.test(key)).sort()).toEqual([
+    'getKosmosynS7State', 'initializeKosmosynS7', 'setKosmosynS7Enabled'
+  ]);
+  expect(api.invoke).toBeUndefined(); expect(api.uninitializeKosmosynS7).toBeUndefined();
+  await api.getKosmosynS7State(); await api.initializeKosmosynS7(); await api.setKosmosynS7Enabled(true); await api.setKosmosynS7Enabled(false);
+  expect(invoke.mock.calls).toEqual([
+    ['kosmosynS7:state', undefined], ['kosmosynS7:initialize', undefined],
+    ['kosmosynS7:set-enabled', true], ['kosmosynS7:set-enabled', false]
+  ]);
+  invoke.mockClear();
+});
 
 it('keeps disk paths batched while transporting pathless clipboard bytes one at a time', async () => {
   await import('../src/preload/index.js');

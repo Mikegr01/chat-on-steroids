@@ -194,6 +194,9 @@ const api = {
   attachText: (text: string) => call<InputAttachment>('sessions:attachText', { text }),
   getUsage: () => call<UsageOverview>('usage:get'),
   getState: () => call<AppState>('state:get'),
+  getKosmosynS7State: () => call<Config['kosmosynS7']>('kosmosynS7:state'),
+  initializeKosmosynS7: () => call<Config['kosmosynS7']>('kosmosynS7:initialize'),
+  setKosmosynS7Enabled: (enabled: boolean) => call<Config['kosmosynS7']>('kosmosynS7:set-enabled', enabled),
   saveSettings: (patch: SettingsPatch, base: SettingsPatch) => call<AppState>('settings:save', { patch, base }),
   addRoot: () => call<AppState>('roots:add'),
   /** A folder dropped on the window; only the preload can learn a dropped File's path. */

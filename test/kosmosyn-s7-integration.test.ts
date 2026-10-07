@@ -12,7 +12,7 @@ vi.mock('../src/main/connection.js', async original => {
   return { ...actual, connect: async () => {}, getStatus: () => ({ ...actual.getStatus(), state: 'connected' }) };
 });
 vi.mock('../src/main/browser.js', () => ({ openInPreferredBrowser: async () => 'fixture', isPreferredBrowserRunning: async () => null }));
-import { defaultConfig, initConfigPath, loadConfig, saveConfig, getConfig, updateConfig } from '../src/main/config.js';
+import { defaultConfig, initConfigPath, loadConfig, saveConfig, getConfig, updateConfig, initializeKosmosynS7, setKosmosynS7Enabled } from '../src/main/config.js';
 import { initSecretsPath } from '../src/main/secrets.js';
 import { initDurableStore, resetDurableForTests, flushDurable, readStrictDurable, writeStrictDurableNow } from '../src/main/durable.js';
 import { createSession, initSessionStore, resetSessionStoreForTests, rebindSession } from '../src/main/session/store.js';
@@ -41,8 +41,8 @@ afterEach(async () => {
   resetDurableForTests(); resetSessionStoreForTests(); await fs.rm(directory, { recursive: true, force: true });
 });
 async function enabled() {
-  await s7Authority.initialize(); await saveConfig({ ...getConfig(), kosmosynS7: { enabled: false, initialized: true } });
-  await saveConfig({ ...getConfig(), kosmosynS7: { enabled: true, initialized: true } });
+  await initializeKosmosynS7();
+  await setKosmosynS7Enabled(true);
 }
 async function offer() {
   const conversationId = randomUUID(); const session = await createSession({ title: 'S7 fixture', conversationId, origin: { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
@@ -69,6 +69,12 @@ async function event(f: Awaited<ReturnType<typeof offer>>, type: string, sequenc
 it('OFF preserves the actual first-claim legacy response and no S7 custody', async () => {
   const f = await offer(); const result = await f.claim(); expect(result.body.input.id).toBe(f.row.id);
   expect(result.body.s7).toBeUndefined(); expect(s7Authority.blocks(f.row)).toBe(false);
+});
+it('production initialization alone keeps ordinary admission on legacy without S7 custody', async () => {
+  expect(await initializeKosmosynS7()).toEqual({ enabled: false, initialized: true });
+  const f = await offer(); const result = await f.claim();
+  expect(result.body.input.id).toBe(f.row.id); expect(result.body.s7).toBeUndefined();
+  expect(s7Authority.records()).toEqual([]);
 });
 it('initialization must durably precede enabling, and schema rejects malformed provenance', async () => {
   await expect(saveConfig({ ...getConfig(), kosmosynS7: { enabled: true, initialized: true } })).rejects.toThrow('Initialize');

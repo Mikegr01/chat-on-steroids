@@ -813,6 +813,15 @@
                 <label class="inline"><input type="checkbox" id="playfulStatus" /> Playful status words: show rotating gym jokes instead of “Working”</label>
                 <label class="inline"><input type="checkbox" id="controlApiEnabled" /> Local control API: let agents on this computer read app status and chats</label>
               </div>
+              <div class="field" id="kosmosynS7Control" translate="no">
+                <h3>Kosmosyn S7 — operator controls</h3>
+                <p id="kosmosynS7State" role="status">Uninitialized</p>
+                <div class="row-inline">
+                  <button class="btn" id="kosmosynS7Initialize" type="button" disabled>Initialize</button>
+                  <label class="inline"><input id="kosmosynS7Enabled" type="checkbox" disabled /> Enable S7</label>
+                </div>
+                <p class="hint" id="kosmosynS7Error" role="alert" hidden></p>
+              </div>
             </details>
             <div id="toolApprovalSetup"></div>
           </div>

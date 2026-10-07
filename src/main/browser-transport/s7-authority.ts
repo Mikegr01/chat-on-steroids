@@ -113,9 +113,20 @@ export class S7Authority {
   }
   async initialize(): Promise<void> {
     await this.withSettings(async () => {
+      if (this.options.gate().initialized) {
+        await this.validateInitialized();
+        return;
+      }
       const read = await this.read();
-      if (read.kind === 'absent' && !this.options.gate().initialized) await this.publish({ version: 1, records: [] });
-      else if (read.kind !== 'valid' || !ledgerSchema.safeParse(read.value).success) throw new Error('S7 ledger unavailable');
+      if (read.kind === 'absent') await this.publish({ version: 1, records: [] });
+      else {
+        const parsed = read.kind === 'valid' ? ledgerSchema.safeParse(read.value) : null;
+        if (!parsed?.success || Buffer.byteLength(JSON.stringify(parsed.data)) > S7_MAX_BYTES) throw new Error('S7 ledger unavailable');
+        if (parsed.data.records.length) throw new Error('S7 uninitialized ledger is not empty');
+        // An empty durable generation is the retry state after config persistence failed.
+        if (!await this.snapshotCurrent()) throw new Error('S7 custody snapshot unavailable');
+      }
+      this.healthy = true; this.loaded = true;
     });
   }
   async validateInitialized(): Promise<void> {

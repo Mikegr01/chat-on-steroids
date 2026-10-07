@@ -767,3 +767,29 @@ export function updateConfig(
 export function saveConfig(next: Config): Promise<Config> {
   return updateConfig(() => next);
 }
+
+/** Dedicated operator controls. Generic renderer settings cannot carry this gate. */
+export async function getKosmosynS7State(): Promise<Config['kosmosynS7']> {
+  await mutationQueue;
+  return { ...current.kosmosynS7 };
+}
+
+export async function initializeKosmosynS7(): Promise<Config['kosmosynS7']> {
+  const next = await updateConfig(async latest => {
+    // Config queue -> authority queue, released before persist takes authority again.
+    // Never call updateConfig from inside withSettings: that would reverse/re-enter the queues.
+    await s7Authority.initialize();
+    return latest.kosmosynS7.initialized ? latest
+      : { ...latest, kosmosynS7: { initialized: true, enabled: false } };
+  }, undefined, (_next, previous, persist) => previous.kosmosynS7.initialized ? Promise.resolve(previous) : persist());
+  return { ...next.kosmosynS7 };
+}
+
+export async function setKosmosynS7Enabled(enabled: boolean): Promise<Config['kosmosynS7']> {
+  if (typeof enabled !== 'boolean') throw new Error('Invalid S7 enabled value');
+  const next = await updateConfig(latest => {
+    if (enabled && !latest.kosmosynS7.initialized) throw new Error('Initialize S7 custody before enabling');
+    return { ...latest, kosmosynS7: { ...latest.kosmosynS7, enabled } };
+  });
+  return { ...next.kosmosynS7 };
+}

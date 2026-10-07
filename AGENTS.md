@@ -312,6 +312,15 @@ from the latest requested state, preserving fast successive edits. Disable side 
 ordered: revoke/park worker execution and durably retain history, cancel its commands while the
 bridge is available, then stop unnecessary bridge/publication resources.
 
+Kosmosyn S7 has dedicated operator controls under Setup's Advanced section. Three fixed
+preload/IPC methods inspect, initialize through the real authority, and explicitly enable or
+disable its gate; ordinary Settings snapshots cannot mutate it. Uninitialized custody accepts
+only an absent or valid empty ledger (including an interrupted-initialization retry). Config
+publishes initialized/Off only after authority validation and durable config persistence.
+Initialization is irreversible and idempotent; Off preserves all custody and does not require
+readable custody. Controls take config queue then authority queue without re-entry, and never
+enqueue browser work. The renderer paints dedicated authoritative replies and blocks duplicates.
+
 The BrowserWindow keeps context isolation, sandbox and web security on; Node integration and
 webviews off. CSP, permission denial, navigation/window restrictions and fixed preload methods
 remain intact. OS consent for Desktop is independent from the app's settings.

@@ -9,6 +9,7 @@ import { initBrowserPreferences } from './browser-preferences.js';
 import { initConnectionAdvanced } from './connection-popover.js';
 import { initSetupGuide } from './setup-guide.js';
 import { initAppearance } from './appearance.js';
+import { initKosmosynS7Control } from './kosmosyn-s7-control.js';
 import { initPet } from './pet.js';
 import { initPets } from './pets.js';
 import { initSkillsLibrary } from './skills-library.js';
@@ -59,6 +60,7 @@ initSetupGuide();
 document.body.append($('connectionPopover'));
 const connectionAdvanced = initConnectionAdvanced();
 const appearance = initAppearance(patch => { void save(patch); });
+const kosmosynS7Control = initKosmosynS7Control(api);
 
 /** Same shape the platform uses; mirrored here only to grey out step 2 until it is valid. */
 const TUNNEL_ID_PATTERN = /^tunnel_[0-9a-f]{32}$/;
@@ -137,6 +139,7 @@ let openSkillsLibrary: () => void = () => undefined;
 let refreshDiagnostics: () => Promise<void> = async () => undefined;
 
 function showTab(name: string): void {
+  if (name === 'setup') void kosmosynS7Control.refresh();
   if (name === 'skills') openSkillsLibrary();
   const library = name === 'plugins' || name === 'skills' || name === 'pets' || name === 'diagnostics';
   const settings = name !== 'chat' && !library;
@@ -1126,6 +1129,10 @@ function apply(next: AppState): void {
   state = next;
   applying = true;
   const { config, status } = next;
+
+  // Later ordinary Settings replies can contain a snapshot from before an S7 control.
+  // Once seeded, this section refreshes through its dedicated read/operation replies.
+  if (!previousState) kosmosynS7Control.apply(config.kosmosynS7);
 
   const connected = status.state === 'connected';
   const offline = status.state === 'offline';

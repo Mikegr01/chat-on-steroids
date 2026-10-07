@@ -59,7 +59,7 @@ import {
 import { MAX_GOAL_SYSTEM_PROMPT_CHARS } from '../shared/goal.js';
 import { MAX_HANDOFF_PROMPT_CHARS } from '../shared/handoff.js';
 import { applySettings, connect, disconnect, getStatus, onStatusChange } from './connection.js';
-import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CHARS, browserBridgePortSchema } from './config.js';
+import { effectiveCapabilities, getConfig, updateConfig, getKosmosynS7State, initializeKosmosynS7, setKosmosynS7Enabled, MAX_MCP_INSTRUCTIONS_CHARS, browserBridgePortSchema } from './config.js';
 import { bridgePortSelection } from './bridge-ports.js';
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
@@ -517,6 +517,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     // secure-storage availability/decryption probes and the rest of the initial state snapshot.
     logInfo('renderer state ready');
     return state;
+  });
+
+  handle('kosmosynS7:state', async payload => {
+    z.undefined().parse(payload);
+    return getKosmosynS7State();
+  });
+  handle('kosmosynS7:initialize', async payload => {
+    z.undefined().parse(payload);
+    try { return await initializeKosmosynS7(); }
+    catch { throw new Error('S7 initialization failed. Check custody and retry.'); }
+  });
+  handle('kosmosynS7:set-enabled', async payload => {
+    const enabled = z.boolean().parse(payload);
+    try { return await setKosmosynS7Enabled(enabled); }
+    catch { throw new Error('S7 control failed. Check initialization and custody.'); }
   });
 
   handle('settings:save', async (payload) => {

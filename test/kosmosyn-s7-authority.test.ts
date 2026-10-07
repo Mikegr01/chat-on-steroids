@@ -25,6 +25,18 @@ async function fixture() {
 }
 
 describe('S7 selective cross-transport ownership', () => {
+  it('rejects schema-valid non-empty custody when uninitialized without overwriting it', async () => {
+    const f = await fixture();
+    await f.authority.select(f.row, f.context);
+    await f.authority.action('abort', f.context.election);
+    const custody = structuredClone(f.disk());
+    f.gate.enabled = false; f.gate.initialized = false;
+    const write = vi.fn(f.options.write);
+    const authority = new f.S7Authority({ ...f.options, write });
+    await expect(authority.initialize()).rejects.toThrow('S7 uninitialized ledger is not empty');
+    expect(f.disk()).toEqual(custody);
+    expect(write).not.toHaveBeenCalled();
+  });
   it('default OFF preserves legacy authority', async () => {
     const f = await fixture(); f.gate.enabled = false;
     expect((await f.authority.select(f.row, f.context)).kind).toBe('LEGACY_AUTHORITY');
