@@ -139,3 +139,12 @@ it('silently accepts the retired max_output_tokens while enforcing the same real
   expect(requested).not.toContain('max_output_tokens is retired');
   expect(omitted).not.toContain('max_output_tokens is retired');
 }, 30_000);
+
+it('reports unavailable lossless retention when exec has no exact session identity', async () => {
+  endpoint = await serve();
+
+  const output = await execOutput(endpoint.url, undefined);
+
+  expect(output).toContain('Raw output retention: FAILED (NOT_AVAILABLE:');
+  expect(output).not.toContain('Retrieval available: true');
+}, 30_000);

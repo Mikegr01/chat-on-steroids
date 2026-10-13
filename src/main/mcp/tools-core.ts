@@ -134,7 +134,18 @@ import {
   awaitFreshCallOrigin,
   recordAgentMessage
 } from '../session/recorder.js';
-import { findSessionByConversation } from '../session/store.js';
+import {
+  beginContextArtifact,
+  findSessionByConversation,
+  readContextArtifact,
+  searchContextArtifact
+} from '../session/store.js';
+import {
+  ContextArtifactError,
+  MAX_CONTEXT_ARTIFACT_CONTEXT_BYTES,
+  MAX_CONTEXT_ARTIFACT_MATCHES,
+  MAX_CONTEXT_ARTIFACT_READ_BYTES
+} from '../session/context-artifacts.js';
 import { requestCorrelation } from '../session/correlation.js';
 import {
   adoptAgent,
@@ -199,6 +210,11 @@ const unifiedExecOutputSchema = z
     benign_exit: z.boolean().optional().describe('Non-zero exit is an expected result, not a failure.'),
     output_replayed: z.boolean().optional().describe('Retained output; command was not run again.'),
     original_token_count: z.number().optional().describe('Approximate token count before output truncation.'),
+    raw_bytes: z.number().optional().describe('Exact retained raw-output byte count when lossless retrieval is available.'),
+    artifact_ref: z.string().optional().describe('Opaque session-owned reference for exact raw-output retrieval.'),
+    sha256: z.string().optional().describe('SHA-256 of the committed raw output artifact.'),
+    retrieval_available: z.boolean().optional().describe('True only when the raw artifact committed successfully.'),
+    retention_error: z.string().optional().describe('Explicit raw-output retention failure; no artifact is advertised.'),
     output: z.string().describe('Command output text, possibly truncated.'),
     supplemental_context: z.string().optional().describe('App context, not process output.')
   })
@@ -844,6 +860,27 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             const ripgrep = locateRipgrep();
             const executionCommand = deriveExecArgs(shell,
               withPosixPathPrefix(boundCommand, shell.shellType, ripgrep ? nodePath.dirname(ripgrep) : null), useLoginShell);
+            const childEnv = execChildEnvironment();
+            const artifactOwner = currentCaller();
+            let contextArtifactWriter;
+            let retentionSetupError: { code: string; message: string } | undefined;
+            if (artifactOwner.sessionId) {
+              try {
+                contextArtifactWriter = await beginContextArtifact(
+                  artifactOwner.sessionId,
+                  artifactOwner.requestId ?? `exec-${processId}`
+                );
+              } catch (error) {
+                retentionSetupError = error instanceof ContextArtifactError
+                  ? { code: error.code, message: error.message }
+                  : { code: 'WRITE_FAILED', message: 'Context artifact retention could not start' };
+              }
+            } else {
+              retentionSetupError = {
+                code: 'NOT_AVAILABLE',
+                message: 'exact local session identity is required for lossless output retention'
+              };
+            }
             const output = await unifiedExecManager.execCommand({
               classifyExit: (exitCode, rawOutput) => {
                 if (!batch) return nonZeroExitIsBenign(boundCommand, exitCode, rawOutput);
@@ -862,9 +899,13 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
               cwd: dir.real,
               displayCwd: dir.virtual,
-              env: execChildEnvironment(),
-              tty: input.tty ?? DEFAULT_TTY
+              env: childEnv,
+              tty: input.tty ?? DEFAULT_TTY,
+              contextArtifactWriter
             });
+            if (retentionSetupError && !output.contextArtifact && !output.contextArtifactError) {
+              output.contextArtifactError = retentionSetupError;
+            }
             // Which exact session or temporary request principal may later write to this
             // process id. Request custody upgrades lazily when exact correlation arrives.
             noteExecOwner(output.processId ?? output.completedSessionId ?? null, owner);
@@ -1018,6 +1059,78 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             return fail(`write_stdin failed: ${message}${retry}`);
           }
         })
+    );
+
+    reg.register(
+      'context_artifact',
+      toolDeclaration('context_artifact', () => ({
+        title: 'Read retained command output',
+        description:
+          'Read or literal-search one exact committed raw command-output artifact by opaque ref. ' +
+          'The ref never grants filesystem access and is valid only inside its owning session.',
+        inputSchema: z.discriminatedUnion('action', [
+          z.object({
+            action: z.literal('read'),
+            ref: z.string().min(1).max(100),
+            offset: z.number().int().min(0),
+            length: z.number().int().min(1).max(MAX_CONTEXT_ARTIFACT_READ_BYTES)
+          }).strict(),
+          z.object({
+            action: z.literal('search'),
+            ref: z.string().min(1).max(100),
+            query: z.string().min(1).max(4096),
+            max_matches: z.number().int().min(1).max(MAX_CONTEXT_ARTIFACT_MATCHES).optional(),
+            context_bytes: z.number().int().min(0).max(MAX_CONTEXT_ARTIFACT_CONTEXT_BYTES).optional()
+          }).strict()
+        ]),
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+      })),
+      async (input) => reg.guarded('command', 'context_artifact', async () => {
+        const sessionId = currentCaller().sessionId;
+        if (!sessionId) {
+          return failIdentity('CONTEXT_ARTIFACT_OWNER_UNAVAILABLE: exact local session identity is required for artifact retrieval.');
+        }
+        try {
+          if (input.action === 'read') {
+            const result = await readContextArtifact(sessionId, input.ref, input.offset, input.length);
+            const utf8 = result.bytes.toString('utf8');
+            const exactUtf8 = Buffer.from(utf8, 'utf8').equals(result.bytes) ? utf8 : null;
+            return ok([
+              `ref: ${result.ref}`,
+              `byte_range: [${result.offset},${result.end})`,
+              `raw_bytes: ${result.total}`,
+              `sha256: ${result.sha256}`,
+              `base64: ${result.bytes.toString('base64')}`,
+              ...(exactUtf8 === null ? [] : [`utf8:\n${exactUtf8}`])
+            ].join('\n'));
+          }
+          const result = await searchContextArtifact(
+            sessionId,
+            input.ref,
+            input.query,
+            input.max_matches,
+            input.context_bytes
+          );
+          const rows = result.matches.map((match, index) => [
+            `match ${index + 1}: bytes [${match.start},${match.end}), context [${match.contextStart},${match.contextEnd})`,
+            `base64: ${match.bytes.toString('base64')}`,
+            ...(match.text === null ? [] : [`utf8:\n${match.text}`])
+          ].join('\n'));
+          return ok([
+            `ref: ${result.ref}`,
+            `query: ${JSON.stringify(result.query)}`,
+            `raw_bytes: ${result.total}`,
+            `sha256: ${result.sha256}`,
+            `matches: ${result.matches.length}`,
+            ...rows
+          ].join('\n'));
+        } catch (error) {
+          if (error instanceof ContextArtifactError) {
+            return fail(`CONTEXT_ARTIFACT_${error.code}: ${error.message}`);
+          }
+          return fail('CONTEXT_ARTIFACT_READ_FAILED: retained evidence could not be read.');
+        }
+      })
     );
   }
 

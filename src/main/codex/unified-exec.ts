@@ -46,6 +46,11 @@ import {
 } from './unified-exec-constants.js';
 import { terminateProcessTree } from '../exec.js';
 import { prefixPowershellScriptWithUtf8, type ShellType } from './shell.js';
+import {
+  ContextArtifactError,
+  type ContextArtifactDescriptor,
+  type ContextArtifactWriter
+} from '../session/context-artifacts.js';
 
 // --------------------------------------------------------------------------- errors
 
@@ -199,6 +204,8 @@ interface PtyProcess {
   onExit(listener: (event: { exitCode: number; signal?: number }) => void): unknown;
   write(data: string): void;
   resize(cols: number, rows: number): void;
+  pause(): void;
+  resume(): void;
   kill(signal?: string): void;
 }
 
@@ -229,6 +236,12 @@ export interface SpawnParams {
   cwd: string;
   env: NodeJS.ProcessEnv;
   tty: boolean;
+  contextArtifactWriter?: ContextArtifactWriter;
+}
+
+export interface ContextArtifactRetention {
+  descriptor?: ContextArtifactDescriptor;
+  error?: { code: string; message: string };
 }
 
 const EARLY_EXIT_GRACE_PERIOD_MS = 150;
@@ -284,12 +297,24 @@ class UnifiedExecProcess {
   private openStreams = 0;
   private child: ChildProcess | null = null;
   private pty: PtyProcess | null = null;
+  private contextArtifactWriter: ContextArtifactWriter | null;
+  private artifactBackpressure: Promise<void> | null = null;
+  private artifactPaused = false;
+  private artifactFinalized = false;
+  private resolveArtifactResult!: (result: ContextArtifactRetention) => void;
+  private readonly artifactResult: Promise<ContextArtifactRetention>;
   readonly tty: boolean;
   private readonly spawnPid: number;
 
-  private constructor(tty: boolean, pid: number, batchMarker?: string) {
+  private constructor(tty: boolean, pid: number, batchMarker?: string, contextArtifactWriter?: ContextArtifactWriter) {
     this.tty = tty;
     this.spawnPid = pid;
+    this.contextArtifactWriter = contextArtifactWriter ?? null;
+    this.artifactResult = new Promise(resolve => { this.resolveArtifactResult = resolve; });
+    if (!this.contextArtifactWriter) {
+      this.artifactFinalized = true;
+      this.resolveArtifactResult({});
+    }
     if (batchMarker) {
       this.batchDisplay = new CommandBatchDisplay(batchMarker);
       this.displayBuffer = new HeadTailBuffer();
@@ -316,12 +341,16 @@ class UnifiedExecProcess {
 
   static async spawn(params: SpawnParams): Promise<UnifiedExecProcess> {
     const file = params.command[0];
-    if (file === undefined || params.command.length === 0) throw UnifiedExecError.missingCommandLine();
+    if (file === undefined || params.command.length === 0) {
+      await params.contextArtifactWriter?.abort().catch(() => undefined);
+      throw UnifiedExecError.missingCommandLine();
+    }
     const args = params.command.slice(1);
 
     if (params.tty) {
       const pty = await loadPty();
       if (!pty) {
+        await params.contextArtifactWriter?.abort().catch(() => undefined);
         throw UnifiedExecError.createProcess('a pseudo-console is not available on this machine');
       }
       let handle: PtyProcess;
@@ -342,9 +371,10 @@ class UnifiedExecProcess {
           }
         );
       } catch (error) {
+        await params.contextArtifactWriter?.abort().catch(() => undefined);
         throw UnifiedExecError.createProcess(error instanceof Error ? error.message : String(error));
       }
-      const managed = new UnifiedExecProcess(true, handle.pid, params.batchMarker);
+      const managed = new UnifiedExecProcess(true, handle.pid, params.batchMarker, params.contextArtifactWriter);
       managed.pty = handle;
       handle.onData((data) => managed.pushChunk(Buffer.from(data, 'utf8')));
       handle.onExit((event) => {
@@ -373,10 +403,11 @@ class UnifiedExecProcess {
         ...(verbatim ? { windowsVerbatimArguments: true } : {})
       });
     } catch (error) {
+      await params.contextArtifactWriter?.abort().catch(() => undefined);
       throw UnifiedExecError.createProcess(error instanceof Error ? error.message : String(error));
     }
 
-    const managed = new UnifiedExecProcess(false, child.pid ?? -1, params.batchMarker);
+    const managed = new UnifiedExecProcess(false, child.pid ?? -1, params.batchMarker, params.contextArtifactWriter);
     managed.child = child;
     // stdout and stderr are combined into one stream, exactly as `combine_output_receivers`
     // does on the local Codex path, so interleaving is preserved in arrival order.
@@ -393,8 +424,9 @@ class UnifiedExecProcess {
       child.once('error', (error: Error) => {
         managed.failure = error.message;
         managed.signalExit(null);
+        void managed.failContextArtifact(new ContextArtifactError('WRITE_FAILED', 'Command process failed to start'))
+          .finally(resolve);
         managed.closeOutput();
-        resolve();
       });
     });
     void spawnFailure;
@@ -410,6 +442,7 @@ class UnifiedExecProcess {
     // ProcessFailed error. The event necessarily arrives before a successful
     // `spawn` event, well inside Codex's 150 ms early-exit grace window.
     if (managed.failure !== null && child.pid === undefined) {
+      await spawnFailure;
       throw UnifiedExecError.createProcess(managed.failure);
     }
     return managed;
@@ -428,6 +461,33 @@ class UnifiedExecProcess {
 
   private pushChunk(chunk: Buffer): void {
     if (chunk.length === 0) return;
+    const writer = this.contextArtifactWriter;
+    if (writer) {
+      if (this.artifactPaused) {
+        void this.failContextArtifact(new ContextArtifactError(
+          'WRITE_FAILED',
+          'Context artifact source produced data while storage was backpressured'
+        ));
+      } else {
+        try {
+          if (!writer.write(chunk)) {
+            this.pauseOutputSources();
+            this.artifactPaused = true;
+            const pending = writer.waitForDrain().then(() => {
+              if (this.contextArtifactWriter === writer) {
+                this.artifactPaused = false;
+                this.resumeOutputSources();
+              }
+            }).catch((error) => this.failContextArtifact(error));
+            this.artifactBackpressure = pending.finally(() => {
+              if (this.artifactBackpressure === pending) this.artifactBackpressure = null;
+            });
+          }
+        } catch (error) {
+          void this.failContextArtifact(error);
+        }
+      }
+    }
     this.history.pushChunk(chunk);
     this.buffer.pushChunk(chunk);
     if (this.batchDisplay) this.displayBuffer!.pushChunk(this.batchDisplay.push(chunk));
@@ -444,6 +504,63 @@ class UnifiedExecProcess {
     if (this.batchDisplay) this.displayBuffer!.pushChunk(this.batchDisplay.push(Buffer.alloc(0), true));
     this.outputClosed = true;
     this.outputClosedNotify.notifyWaiters();
+    this.finalizeContextArtifact();
+  }
+
+  private pauseOutputSources(): void {
+    if (this.pty) this.pty.pause();
+    else {
+      this.child?.stdout?.pause();
+      this.child?.stderr?.pause();
+    }
+  }
+
+  private resumeOutputSources(): void {
+    if (this.pty) this.pty.resume();
+    else {
+      this.child?.stdout?.resume();
+      this.child?.stderr?.resume();
+    }
+  }
+
+  private retentionFailure(error: unknown): ContextArtifactRetention['error'] {
+    if (error instanceof ContextArtifactError) return { code: error.code, message: error.message };
+    return { code: 'WRITE_FAILED', message: 'Context artifact retention failed' };
+  }
+
+  private failContextArtifact(error: unknown): Promise<void> {
+    const writer = this.contextArtifactWriter;
+    if (!writer || this.artifactFinalized) return Promise.resolve();
+    this.contextArtifactWriter = null;
+    this.artifactFinalized = true;
+    this.artifactPaused = false;
+    this.resumeOutputSources();
+    const failure = this.retentionFailure(error);
+    return writer.abort().finally(() => this.resolveArtifactResult({ error: failure }));
+  }
+
+  private finalizeContextArtifact(): void {
+    const writer = this.contextArtifactWriter;
+    if (!writer || this.artifactFinalized) return;
+    this.contextArtifactWriter = null;
+    this.artifactFinalized = true;
+    void (async () => {
+      try {
+        await this.artifactBackpressure;
+        const descriptor = await writer.commit();
+        this.resolveArtifactResult({ descriptor });
+      } catch (error) {
+        await writer.abort().catch(() => undefined);
+        this.resolveArtifactResult({ error: this.retentionFailure(error) });
+      } finally {
+        this.artifactPaused = false;
+        this.resumeOutputSources();
+      }
+    })();
+  }
+
+  contextArtifactResult(): Promise<ContextArtifactRetention> {
+    return this.artifactResult;
   }
 
   private signalExit(exitCode: number | null): void {
@@ -590,6 +707,8 @@ export interface ExecCommandToolOutput {
   originalTokenCount: number | null;
   /** Bytes the 1 MiB collection cap dropped, before model-facing truncation. */
   outputOmittedBytes: number | null;
+  contextArtifact?: ContextArtifactDescriptor;
+  contextArtifactError?: { code: string; message: string };
 }
 
 function modelOutputMaxTokens(output: ExecCommandToolOutput): number {
@@ -626,6 +745,14 @@ export function execCommandResponseText(output: ExecCommandToolOutput): string {
   if (output.replayed) sections.push('Retained output (already completed; command was not run again):');
   if (output.benignExit) sections.push('This non-zero exit is an expected command result, not a failure.');
   if (output.originalTokenCount !== null) sections.push(`Original token count: ${output.originalTokenCount}`);
+  if (output.contextArtifact) {
+    sections.push(`Raw bytes: ${output.contextArtifact.rawBytes}`);
+    sections.push(`Artifact ref: ${output.contextArtifact.ref}`);
+    sections.push(`SHA-256: ${output.contextArtifact.sha256}`);
+    sections.push('Retrieval available: true');
+  } else if (output.contextArtifactError) {
+    sections.push(`Raw output retention: FAILED (${output.contextArtifactError.code}: ${output.contextArtifactError.message})`);
+  }
   sections.push('Output:');
   sections.push(truncatedOutput(output, modelOutputMaxTokens(output)));
   return sections.join('\n');
@@ -642,6 +769,13 @@ export function execCommandStructuredOutput(output: ExecCommandToolOutput): Reco
     ...(output.benignExit ? { benign_exit: true } : {}),
     ...(output.replayed ? { output_replayed: true } : {}),
     ...(output.originalTokenCount === null ? {} : { original_token_count: output.originalTokenCount }),
+    ...(output.contextArtifact ? {
+      raw_bytes: output.contextArtifact.rawBytes,
+      artifact_ref: output.contextArtifact.ref,
+      sha256: output.contextArtifact.sha256,
+      retrieval_available: true
+    } : {}),
+    ...(output.contextArtifactError ? { retention_error: `${output.contextArtifactError.code}: ${output.contextArtifactError.message}` } : {}),
     // This adapter emits structuredContent beside the text result, so both representations
     // must obey the same policy/default budget. Returning the retained raw buffer here made
     // the schema path bypass the model-visible truncation entirely.
@@ -666,6 +800,7 @@ export interface ExecCommandRequest {
   displayCwd: string;
   env: NodeJS.ProcessEnv;
   tty: boolean;
+  contextArtifactWriter?: ContextArtifactWriter;
 }
 
 export interface WriteStdinRequest {
@@ -721,7 +856,10 @@ export interface BackgroundExecState {
 
 export class UnifiedExecProcessManager {
   private readonly processes = new Map<number, ProcessEntry>();
-  private readonly completed = new Map<number, Pick<ExecCommandToolOutput, 'rawOutput' | 'displayOutput' | 'exitCode' | 'benignExit'> & { identity: object }>();
+  private readonly completed = new Map<number, Pick<ExecCommandToolOutput, 'rawOutput' | 'displayOutput' | 'exitCode' | 'benignExit'> & {
+    identity: object;
+    artifactResult: Promise<ContextArtifactRetention>;
+  }>();
   private releaseListener?: (processId: number) => void;
   private readonly reservedProcessIds = new Set<number>();
   private readonly maxWriteStdinYieldTimeMs: number;
@@ -759,6 +897,7 @@ export class UnifiedExecProcessManager {
     this.reservedProcessIds.delete(entry.processId);
     this.completed.set(entry.processId, {
       identity: entry.process.identity,
+      artifactResult: entry.process.contextArtifactResult(),
       rawOutput, exitCode,
       ...(entry.batchMarker ? { displayOutput: new CommandBatchDisplay(entry.batchMarker).push(rawOutput, true) } : {}),
       benignExit: entry.process.benignExit(entry.classifyExit)
@@ -785,9 +924,11 @@ export class UnifiedExecProcessManager {
         shellType: request.shellType,
         cwd: request.cwd,
         env: request.env,
-        tty: request.tty
+        tty: request.tty,
+        contextArtifactWriter: request.contextArtifactWriter
       });
     } catch (error) {
+      await request.contextArtifactWriter?.abort().catch(() => undefined);
       this.releaseProcessId(request.processId);
       throw error instanceof UnifiedExecError
         ? error
@@ -847,6 +988,7 @@ export class UnifiedExecProcessManager {
       exitCode = process.exitCode();
     }
 
+    const artifact = responseProcessId === null ? await process.contextArtifactResult() : {};
     const response = {
       ...(responseProcessId === null ? { completedSessionId: request.processId } : {
         completion: process.completion.then(async completion => {
@@ -867,7 +1009,9 @@ export class UnifiedExecProcessManager {
       processId: responseProcessId,
       exitCode,
       originalTokenCount,
-      outputOmittedBytes
+      outputOmittedBytes,
+      ...(artifact.descriptor ? { contextArtifact: artifact.descriptor } : {}),
+      ...(artifact.error ? { contextArtifactError: artifact.error } : {})
     };
     if (responseProcessId !== null) {
       const entry = this.processes.get(request.processId);
@@ -877,16 +1021,20 @@ export class UnifiedExecProcessManager {
   }
 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
-    const replay = (identity?: object): ExecCommandToolOutput | null => {
+    const replay = async (identity?: object): Promise<ExecCommandToolOutput | null> => {
       const saved = this.completed.get(request.processId);
       if (!saved) return null;
       if (identity && saved.identity !== identity) throw UnifiedExecError.unknownProcessId(request.processId);
       if (request.input !== '') throw UnifiedExecError.processFailed('Process already completed; no input was sent. Use empty chars to read its retained output.');
-      return { ...saved, chunkId: generateChunkId(), wallTimeMs: 0, processId: null,
+      const { artifactResult, identity: _identity, ...visibleSaved } = saved;
+      const artifact = await artifactResult;
+      return { ...visibleSaved, chunkId: generateChunkId(), wallTimeMs: 0, processId: null,
         completedSessionId: request.processId, replayed: true, originalTokenCount: approxTokenCount((saved.displayOutput ?? saved.rawOutput).toString('utf8')),
-        outputOmittedBytes: null, truncationPolicy: request.truncationPolicy, maxOutputTokens: request.maxOutputTokens };
+        outputOmittedBytes: null, truncationPolicy: request.truncationPolicy, maxOutputTokens: request.maxOutputTokens,
+        ...(artifact.descriptor ? { contextArtifact: artifact.descriptor } : {}),
+        ...(artifact.error ? { contextArtifactError: artifact.error } : {}) };
     };
-    const saved = replay();
+    const saved = await replay();
     if (saved) return saved;
     const entry = this.processes.get(request.processId);
     if (!entry) throw UnifiedExecError.unknownProcessId(request.processId);
@@ -895,7 +1043,7 @@ export class UnifiedExecProcessManager {
     // Reads and writes against one session must not overlap: they share a draining buffer.
     const release = await locked.interactionLock.lock();
     try {
-      const saved = replay(locked.identity);
+      const saved = await replay(locked.identity);
       if (saved) return saved;
       const current = this.processes.get(request.processId);
       if (!current || current.process !== locked) throw UnifiedExecError.unknownProcessId(request.processId);
@@ -982,6 +1130,7 @@ export class UnifiedExecProcessManager {
         throw UnifiedExecError.unknownProcessId(request.processId);
       }
 
+      const artifact = responseProcessId === null ? await process.contextArtifactResult() : {};
       return {
         ...(responseProcessId === null ? { completedSessionId: request.processId } : {}),
         benignExit: process.benignExit(current.classifyExit),
@@ -994,7 +1143,9 @@ export class UnifiedExecProcessManager {
         processId: responseProcessId,
         exitCode,
         originalTokenCount,
-        outputOmittedBytes
+        outputOmittedBytes,
+        ...(artifact.descriptor ? { contextArtifact: artifact.descriptor } : {}),
+        ...(artifact.error ? { contextArtifactError: artifact.error } : {})
       };
     } finally {
       release();
@@ -1100,6 +1251,7 @@ export class UnifiedExecProcessManager {
     const entry = this.processes.get(processId);
     if (!entry) return false;
     if (!entry.process.hasExited()) await entry.process.terminate();
+    await entry.process.contextArtifactResult();
     const current = this.processes.get(processId);
     if (current && current.process === entry.process) {
       // Match Codex's InitialExecCommandGuard: the initial exec response still
@@ -1114,6 +1266,10 @@ export class UnifiedExecProcessManager {
 
   async terminateAllProcesses(): Promise<void> {
     const entries = [...this.processes.values()];
+    const artifactResults = [
+      ...entries.map((entry) => entry.process.contextArtifactResult()),
+      ...[...this.completed.values()].map((entry) => entry.artifactResult)
+    ];
     for (const id of new Set([...this.reservedProcessIds, ...this.completed.keys()])) this.releaseListener?.(id);
     this.completed.clear();
     this.processes.clear();
@@ -1125,6 +1281,7 @@ export class UnifiedExecProcessManager {
     await Promise.allSettled(
       entries.filter((entry) => !entry.process.hasExited()).map((entry) => entry.process.terminate())
     );
+    await Promise.allSettled(artifactResults);
   }
 
   private refreshProcessState(processId: number): ProcessStatus {

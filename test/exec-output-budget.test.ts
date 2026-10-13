@@ -155,4 +155,16 @@ describe('exec output budget', () => {
     expect(buffer.retainedBytes()).toBe(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
     expect(buffer.omittedBytes()).toBe(4_096);
   });
+
+  it('currently loses a unique marker placed in the omitted middle', () => {
+    const marker = 'NATIVE_CONTEXT_ENGINE_MIDDLE_MARKER';
+    const half = Math.floor(UNIFIED_EXEC_OUTPUT_MAX_BYTES / 2);
+    const buffer = new HeadTailBuffer();
+    buffer.pushChunk(Buffer.from('h'.repeat(half), 'ascii'));
+    buffer.pushChunk(Buffer.from(`middle-before-${marker}-middle-after`, 'ascii'));
+    buffer.pushChunk(Buffer.from('t'.repeat(half + 32_768), 'ascii'));
+
+    expect(buffer.omittedBytes()).toBeGreaterThan(0);
+    expect(buffer.toBytesWithOmissionMarker().toString('utf8')).not.toContain(marker);
+  });
 });

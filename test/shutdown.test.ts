@@ -327,6 +327,7 @@ describe('terminal sessions at shutdown', () => {
       processId: manager.allocateProcessId(),
       process: {
         hasExited: () => exited,
+        contextArtifactResult: async () => ({}),
         terminate: async () => {
           terminated.push(name);
           if (reject) throw new Error(`${name} refused`);
