@@ -89,7 +89,7 @@ export function stagedArtifact(
 ): { name: string; kind: 'installer' | 'appimage'; target: string } | null {
   if (!packaged) return null;
   if (arch !== 'x64' && arch !== 'arm64') return null;
-  if (platform === 'win32') return { name: `Chat-On-Steroids-Setup-${arch}.exe`, kind: 'installer', target: '' };
+  if (platform === 'win32') return { name: `Chat-On-Steroids-Custom-Setup-${arch}.exe`, kind: 'installer', target: '' };
   if (platform === 'linux' && appImage) {
     return { name: `Chat-On-Steroids-Linux-${arch}.AppImage`, kind: 'appimage', target: appImage };
   }

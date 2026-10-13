@@ -61,7 +61,7 @@ async function status(port = bridgePort()!): Promise<number> {
 it('rejects an occupied target without publishing config or disturbing the old listener', async () => {
   const old = bridgePort(); const config = getConfig(); const disk = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
   candidates = [await occupy()];
-  await expect(change(8767)).rejects.toThrow(/EADDRINUSE/);
+  await expect(change(8777)).rejects.toThrow(/EADDRINUSE/);
   expect(getConfig()).toBe(config); expect(bridgePort()).toBe(old);
   expect(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).toBe(disk);
   expect(await status()).toBe(200); expect((await bridgeStatus()).error).toBeNull();
@@ -70,9 +70,9 @@ it('rejects an occupied target without publishing config or disturbing the old l
 it('switches after persistence, retaining pairing and clearing old browser presence', async () => {
   await setSecret('bridgeToken', 'port-switch-fixture');
   const old = bridgePort()!;
-  await change(8767);
+  await change(8777);
   expect(bridgePort()).not.toBe(old);
-  expect((await loadConfig()).ui.browserBridgePort).toBe(8767);
+  expect((await loadConfig()).ui.browserBridgePort).toBe(8777);
   expect(await getSecret('bridgeToken')).toBe('port-switch-fixture');
   expect(await bridgeStatus()).toMatchObject({ running: true, paired: true, present: false, error: null });
   expect(await status()).toBe(200);
@@ -81,9 +81,9 @@ it('switches after persistence, retaining pairing and clearing old browser prese
 
 it('reuses its current port and respects Auto order before considering later candidates', async () => {
   const old = bridgePort()!;
-  candidates = [old]; await change(8767); expect(bridgePort()).toBe(old);
+  candidates = [old]; await change(8777); expect(bridgePort()).toBe(old);
   candidates = [await occupy(), old, 0]; await change('auto'); expect(bridgePort()).toBe(old);
-  candidates = [0, old]; await change(8768); expect(bridgePort()).not.toBe(old);
+  candidates = [0, old]; await change(8778); expect(bridgePort()).not.toBe(old);
 });
 
 it('keeps a prepared listener gated and releases it on configuration write failure', async () => {
@@ -103,19 +103,19 @@ it('keeps a prepared listener gated and releases it on configuration write failu
     }
     return rename(from, to);
   });
-  await expect(change(8767)).rejects.toThrow('fixture disk failure');
+  await expect(change(8777)).rejects.toThrow('fixture disk failure');
   expect(getConfig()).toBe(config); expect(bridgePort()).toBe(old);
   await expect(status(preparedPort)).rejects.toThrow();
 });
 
 it('serializes overlapping changes against the latest committed configuration', async () => {
   const seen: Array<BrowserBridgePort | undefined> = [];
-  const changes = [8767, 8768, 'auto'] as const;
+  const changes = [8777, 8778, 'auto'] as const;
   await Promise.all(changes.map(browserBridgePort => updateConfig(config => {
     seen.push(config.ui.browserBridgePort);
     return { ...config, ui: { ...config.ui, browserBridgePort } };
   }, undefined, publishBridgePortChange)));
-  expect(seen).toEqual(['auto', 8767, 8768]);
+  expect(seen).toEqual(['auto', 8777, 8778]);
   expect(getConfig().ui.browserBridgePort).toBe('auto'); expect(await status()).toBe(200);
 });
 
@@ -125,7 +125,7 @@ it('cancels preparation before persistence when shutdown wins the bind boundary'
     this.once('listening', () => { stopping = shutdownBridge(); });
     return (listen as any).apply(this, args);
   } as any);
-  await expect(change(8767)).rejects.toThrow(/cancelled/);
+  await expect(change(8777)).rejects.toThrow(/cancelled/);
   await stopping;
   expect(getConfig()).toBe(config); expect(bridgePort()).toBeNull();
   expect(await startBridge()).toBeNull();
@@ -137,16 +137,16 @@ it('does not resurrect the bridge if shutdown starts during config publication',
     if (to === path.join(dir, 'config.json')) stopping = shutdownBridge();
     return rename(from, to);
   });
-  await change(8767); await stopping;
-  expect(getConfig().ui.browserBridgePort).toBe(8767); expect(bridgePort()).toBeNull();
+  await change(8777); await stopping;
+  expect(getConfig().ui.browserBridgePort).toBe(8777); expect(bridgePort()).toBeNull();
 });
 
 it('keeps an unavailable saved choice on startup and clears the error after an explicit free choice', async () => {
   await stopBridge();
-  await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, browserBridgePort: 8767 } });
+  await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, browserBridgePort: 8777 } });
   candidates = [await occupy()];
   expect(await startBridge()).toBeNull();
-  expect(getConfig().ui.browserBridgePort).toBe(8767);
+  expect(getConfig().ui.browserBridgePort).toBe(8777);
   expect(await bridgeStatus()).toMatchObject({ running: false, port: null, error: expect.stringContaining('EADDRINUSE') });
   candidates = [0]; await change('auto');
   expect(await bridgeStatus()).toMatchObject({ running: true, error: null });
@@ -161,9 +161,9 @@ it('preserves a live wake socket on rejection and reconnects with the same token
   };
   const socket = await connect();
   try {
-    candidates = [await occupy()]; await expect(change(8767)).rejects.toThrow('EADDRINUSE');
+    candidates = [await occupy()]; await expect(change(8777)).rejects.toThrow('EADDRINUSE');
     expect(socket.readyState).toBe(WebSocket.OPEN);
-    candidates = [0]; const closed = once(socket, 'close'); await change(8767); await closed;
+    candidates = [0]; const closed = once(socket, 'close'); await change(8777); await closed;
     const replacement = await connect(); replacement.terminate();
   } finally { socket.terminate(); }
 });

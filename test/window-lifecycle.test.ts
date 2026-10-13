@@ -11,6 +11,7 @@ import {
   shouldBeginAppBootstrap,
   shouldQuitOnWindowAllClosed
 } from '../src/main/window-lifecycle.js';
+import { CUSTOM_APP_IDENTITY } from '../src/shared/app-identity.js';
 
 describe('native window activation', () => {
   it.each(['darwin', 'win32', 'linux'])('keeps native fullscreen available on macOS (%s)', (platform) => {
@@ -21,6 +22,7 @@ describe('native window activation', () => {
     vm.runInNewContext(constructor, {
       BrowserWindow: function (value: Record<string, unknown>) { options = value; },
       layout: {}, icon: null, process: { platform },
+      CUSTOM_APP_IDENTITY,
       titleBarOverlayForTheme: () => ({}), windowBackgroundForTheme: () => '#181818', getConfig: () => ({ ui: { theme: 'dark' } }),
       UI_BASE_ZOOM: 1, path: { join: () => 'preload.js' }, __dirname: '/app'
     });

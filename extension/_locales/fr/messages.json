@@ -744,7 +744,7 @@
     "message": "Connecte ChatGPT à Chat On Steroids et contrôle les onglets du navigateur en arrière-plan via le DOM, les captures d’écran et les outils de développement."
   },
   "extension_name": {
-    "message": "Extension compagnon Chat On Steroids"
+    "message": "Extension compagnon Chat On Steroids Custom"
   },
   "popup_advanced": {
     "message": "Avancé"

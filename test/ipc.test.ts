@@ -65,7 +65,6 @@ const {
 const { registerIpc } = await import('../src/main/ipc.js');
 const { openInPreferredBrowser } = await import('../src/main/browser.js');
 const { app, nativeTheme, safeStorage, shell, dialog } = await import('electron');
-const { extensionDownloadUrl } = await import('../src/main/version.js');
 const { resetWorkspaces, setWorkspaceFor, workspaceEntries } = await import('../src/main/workspace.js');
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
 
@@ -92,11 +91,11 @@ it('saves port choices, merges stale snapshots and serializes concurrent port ed
   const selection = vi.spyOn(ports, 'bridgePortSelection').mockReturnValue({ candidates: [0], overridden: false });
   try {
     const base = getConfig();
-    const results = await Promise.all([8767, 8768].map(browserBridgePort => save({ ...base, ui: { ...base.ui, browserBridgePort } }, base)));
+    const results = await Promise.all([8777, 8778].map(browserBridgePort => save({ ...base, ui: { ...base.ui, browserBridgePort } }, base)));
     expect(results.every(result => result.ok)).toBe(true);
     const active = bridge.bridgePort();
     expect(await save({ ...base, ui: { ...base.ui, theme: 'light' } }, base)).toMatchObject({ ok: true });
-    expect(getConfig().ui).toMatchObject({ browserBridgePort: 8768, theme: 'light' });
+    expect(getConfig().ui).toMatchObject({ browserBridgePort: 8778, theme: 'light' });
     expect(bridge.bridgePort()).toBe(active);
   } finally { selection.mockRestore(); }
 });
@@ -111,7 +110,7 @@ it('rejects occupied port edits through Settings IPC and preserves the old bridg
   const selection = vi.spyOn(ports, 'bridgePortSelection').mockReturnValue({ candidates: [(blocker.address() as { port: number }).port], overridden: false });
   try {
     const base = getConfig(); const disk = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
-    expect(await save({ ...base, ui: { ...base.ui, browserBridgePort: 8767 } }, base)).toMatchObject({ ok: false });
+    expect(await save({ ...base, ui: { ...base.ui, browserBridgePort: 8777 } }, base)).toMatchObject({ ok: false });
     expect(getConfig()).toBe(base); expect(bridge.bridgePort()).toBe(old);
     expect(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).toBe(disk);
   } finally { selection.mockRestore(); await new Promise<void>(resolve => blocker.close(() => resolve())); }
@@ -120,7 +119,7 @@ it('rejects occupied port edits through Settings IPC and preserves the old bridg
 it('enforces the environment override for explicit edits while accepting unrelated saves', async () => {
   const base = getConfig();
   // vitest.config.ts supplies the real CLF_BRIDGE_PORTS=0 override.
-  const result = await save({ ...base, ui: { ...base.ui, browserBridgePort: 8767 } }, base);
+  const result = await save({ ...base, ui: { ...base.ui, browserBridgePort: 8777 } }, base);
   expect(result).toMatchObject({ ok: false, error: expect.stringContaining('CLF_BRIDGE_PORTS') });
   expect(getConfig().ui.browserBridgePort).toBe('auto');
   const unrelated = await save({ ...base, ui: { ...base.ui, theme: 'light' } }, base);
@@ -702,13 +701,12 @@ describe('bounded IPC identities and OS launch results', () => {
     expect(reply.error).toMatch(/could not open.*access is denied/i);
   });
 
-  it('opens the extension recovery ZIP from the installed app version, never releases/latest', async () => {
-    vi.mocked(app.getVersion).mockReturnValueOnce('1.8.8');
+  it('keeps extension recovery local to the custom installation', async () => {
     const reply = await handlers.get('bridge:downloadExtension')!(null, undefined);
 
     expect(reply).toEqual({ ok: true, data: true });
-    expect(shell.openExternal).toHaveBeenCalledWith(extensionDownloadUrl('1.8.8'));
-    expect(vi.mocked(shell.openExternal).mock.calls[0]?.[0]).not.toContain('/releases/latest/');
+    expect(shell.openPath).toHaveBeenCalledTimes(1);
+    expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
   it('bounds and validates an agent id before it reaches the global broker', async () => {

@@ -837,9 +837,9 @@ it('saves a custom deployment id and returns to the known OpenRouter model', asy
 it('offers all six bridge ports, saves numbers, and distinguishes saved choice from the override listener', async () => {
   const mounted = await mountChat(); const w = mounted.window;
   const select = w.document.getElementById('browserBridgePort') as HTMLSelectElement;
-  expect([...select.options].map(option => option.value)).toEqual(['auto', '8765', '8766', '8767', '8768', '8769']);
+  expect([...select.options].map(option => option.value)).toEqual(['auto', '8775', '8776', '8777', '8778', '8779']);
   expect(select.value).toBe('auto');
-  for (const value of ['8765', '8766', '8767', '8768', '8769', 'auto']) {
+  for (const value of ['8775', '8776', '8777', '8778', '8779', 'auto']) {
     select.value = value; select.dispatchEvent(new w.Event('change', { bubbles: true }));
     await settle();
     expect(mounted.calls.at(-1).ui.browserBridgePort).toBe(value === 'auto' ? 'auto' : Number(value));

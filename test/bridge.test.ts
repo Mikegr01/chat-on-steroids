@@ -14,6 +14,7 @@ import { WebSocket } from 'ws';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
+import { CUSTOM_APP_IDENTITY } from '../src/shared/app-identity.js';
 import { userPromptText } from '../src/shared/user-prompt.js';
 import { currentCoreInstructions } from '../src/main/mcp/instructions.js';
 import { browserControl } from '../src/main/browser-control.js';
@@ -523,13 +524,14 @@ describe('who is allowed to talk to it', () => {
   // The suite binds ephemeral ports so it can never collide with the installed app, so the
   // shipped range has to be asserted directly or a typo in it would ship unnoticed.
   it('ships the fixed candidate range the extension scans', () => {
-    expect(DEFAULT_PORTS).toEqual([8765, 8766, 8767, 8768, 8769]);
+    expect(DEFAULT_PORTS).toEqual([8775, 8776, 8777, 8778, 8779]);
   });
 
   it('identifies itself to an extension without any credential', async () => {
     const reply = await request('GET', '/hello', { auth: null });
     expect(reply.status).toBe(200);
-    expect(reply.body.app).toBe('chat-on-steroids');
+    expect(reply.body.app).toBe(CUSTOM_APP_IDENTITY.bridgeAppId);
+    expect(reply.body.app).not.toBe('chat-on-steroids');
     // Against the constant, not a literal: what matters is that the handshake reports the
     // build's own version, and a hard-coded number here only ever fails on release day.
     expect(reply.body.version).toBe(APP_VERSION);
@@ -13559,7 +13561,7 @@ it('preserves pending commands and durable ACK receipts across a port switch', a
   try {
     const { updateConfig } = await import('../src/main/config.js');
     const { publishBridgePortChange } = await import('../src/main/bridge.js');
-    await updateConfig(config => ({ ...config, ui: { ...config.ui, browserBridgePort: 8767 } }), undefined, publishBridgePortChange);
+    await updateConfig(config => ({ ...config, ui: { ...config.ui, browserBridgePort: 8777 } }), undefined, publishBridgePortChange);
     base = `http://127.0.0.1:${bridgePort()}`;
     expect(pendingCommands()).toEqual(pending);
     expect(await readDurable('bridge-commands')).toEqual(before);

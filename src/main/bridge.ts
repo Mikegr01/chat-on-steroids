@@ -53,6 +53,7 @@ import { blockedChatIds, isChatBlocked, chatBlockedAt } from './session/blocked-
 export { CHAT_ACTIVE_MS, CHAT_SILENCE_MS } from '../shared/session.js';
 import { effectiveCapabilities, getConfig, updateConfig } from './config.js';
 import { BROWSER_BRIDGE_PORTS } from '../shared/browser-bridge.js';
+import { CUSTOM_APP_IDENTITY } from '../shared/app-identity.js';
 import { bridgePortSelection } from './bridge-ports.js';
 import type { Config } from '../shared/types.js';
 import type { PluginSurface } from '../shared/plugin-refresh.js';
@@ -1852,7 +1853,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       200,
       {
-        app: 'chat-on-steroids',
+        app: CUSTOM_APP_IDENTITY.bridgeAppId,
         version: APP_VERSION,
         bridge: BRIDGE_PROTOCOL,
         // Unknown, not incompatible, for a caller that states no protocol (curl in a bug report).

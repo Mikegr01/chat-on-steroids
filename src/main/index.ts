@@ -69,7 +69,8 @@ import {
   type ContinuationSnapshot
 } from './session/continuation.js';
 import { runShutdownSequence } from './shutdown.js';
-import { applyStagedUpdate, startUpdateChecks } from './update.js';
+import { applyStagedUpdate } from './update.js';
+import { configureAppIdentity, CUSTOM_APP_IDENTITY } from './app-identity.js';
 import { UI_BASE_ZOOM, windowLayoutForWorkArea, titleBarOverlayForTheme, windowBackgroundForTheme } from './window-layout.js';
 import { openInPreferredBrowser } from './browser.js';
 import {
@@ -95,6 +96,9 @@ let quitting = false;
 let shutdownStarted = false;
 let shutdownComplete = false;
 const usageWarmup = new AbortController();
+
+// Establish the custom product/profile before Electron creates singleton or shared profile state.
+configureAppIdentity();
 
 // One instance only: two copies would fight over the tunnel and the config file.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -128,7 +132,7 @@ function createWindow(): void {
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hidden' as const, titleBarOverlay: true } : {}),
     // Painted before the renderer loads, so a dark window never flashes white.
     backgroundColor: windowBackgroundForTheme(getConfig().ui.theme, getConfig().ui.appearance),
-    title: 'Chat On Steroids',
+    title: CUSTOM_APP_IDENTITY.productName,
     webPreferences: {
       zoomFactor: UI_BASE_ZOOM,
       preload: path.join(__dirname, '../preload/index.js'),
@@ -498,7 +502,6 @@ void app.whenReady().then(async () => {
   // window that is already on screen. Everything it learns arrives through the ordinary state
   // push, every failure ends inside it, and its own timer keeps it running for a tray app that
   // is never restarted.
-  startUpdateChecks();
   // Warm the existing derived cache once, after startup, without delaying the UI.
   // A visit to Usage joins this same calculation; unchanged recordings cost no reads.
   void usageOverview(usageWarmup.signal).catch((error: Error) => {

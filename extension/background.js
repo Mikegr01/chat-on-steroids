@@ -25,7 +25,7 @@ import { createActiveTabs } from './active-tabs.js';
 
 const activeTabs = globalThis.chrome?.debugger ? createActiveTabs(chrome) : null;
 
-const PORTS = [8765, 8766, 8767, 8768, 8769];
+const PORTS = [8775, 8776, 8777, 8778, 8779];
 const HELLO_TIMEOUT_MS = 1200;
 const REQUEST_TIMEOUT_MS = 10_000;
 /** A journal receipt follows durable session writes, which can outlast an ordinary read. */
@@ -48,6 +48,8 @@ const MODEL_REQUEST_TIMEOUT_MS = 190_000;
 const TIMED_OUT = 'the app took too long to answer';
 /** Bumped only when the request/response shape changes; the app compares it. */
 const BRIDGE_PROTOCOL = 14;
+/** The application identity accepted during bridge discovery. */
+const BRIDGE_APP = 'chat-on-steroids-custom';
 /** Browser-owned presentation preferences also exposed by the popup. */
 const RENDER_STREAM_KEY = 'renderStreamEnabled';
 const SHOW_TIMES_KEY = 'showStreamTimes';
@@ -975,7 +977,7 @@ async function hello(candidate) {
     }, HELLO_TIMEOUT_MS);
     if (!response.ok) return null;
     const body = await response.json();
-    return body && body.app === 'chat-on-steroids' ? body : null;
+    return body && body.app === BRIDGE_APP ? body : null;
   } catch {
     return null;
   }

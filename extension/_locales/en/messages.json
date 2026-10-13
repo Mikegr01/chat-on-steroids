@@ -744,7 +744,7 @@
     "message": "Connects ChatGPT to Chat On Steroids and controls browser tabs in the background with DOM, screenshots and developer tools."
   },
   "extension_name": {
-    "message": "Chat On Steroids companion"
+    "message": "Chat On Steroids Custom companion"
   },
   "popup_advanced": {
     "message": "Advanced"

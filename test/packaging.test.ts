@@ -39,6 +39,30 @@ function yamlFile(relative: string): any {
 }
 
 describe('cross-platform packaging targets', () => {
+  it('isolates the custom Windows product before any shared runtime ownership', () => {
+    const builder = yamlFile('electron-builder.yml');
+    const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+    expect(pkg.name).toBe('chat-on-steroids-custom');
+    expect(pkg.desktopName).toBe('com.chatonsteroids.custom.desktop');
+    expect(builder.appId).toBe('com.chatonsteroids.custom');
+    expect(builder.productName).toBe('Chat On Steroids Custom');
+    expect(builder.win.executableName).toBe('Chat On Steroids Custom');
+    expect(builder.nsis.shortcutName).toBe('Chat On Steroids Custom');
+    expect(builder.nsis.artifactName).toBe('Chat-On-Steroids-Custom-Setup-${arch}.${ext}');
+    expect(builder.nsis.uninstallDisplayName).toBe('Chat On Steroids Custom');
+
+    const main = readFileSync(path.join(root, 'src', 'main', 'index.ts'), 'utf8');
+    const identity = main.indexOf('configureAppIdentity();');
+    const lock = main.indexOf('const hasSingleInstanceLock = app.requestSingleInstanceLock();');
+    expect(identity).toBeGreaterThan(-1);
+    expect(identity).toBeLessThan(lock);
+    expect(main).not.toContain("app.setPath('userData'");
+    expect(main).not.toContain('app.setAppUserModelId(');
+    expect(main).not.toContain('startUpdateChecks();');
+
+    const ipc = readFileSync(path.join(root, 'src', 'main', 'ipc.ts'), 'utf8');
+    expect(ipc).not.toContain('extensionDownloadUrl(');
+  });
   it('stages only the target Windows Pets FFI and probes the packaged binding', () => {
     const config = yamlFile('electron-builder.yml');
     expect(config.files).toContain('!node_modules/@koromix/koffi-*/**/*');
@@ -369,7 +393,7 @@ describe('cross-platform packaging targets', () => {
     expect(builder.deb.depends).toContain('libatspi2.0-0 | libatspi2.0-0t64');
     expect(builder.linux.syncDesktopName).toBe(true);
     expect(builder.linux.maintainer).toMatch(/^Chat On Steroids <[^>]+@users\.noreply\.github\.com>$/);
-    expect(pkg.desktopName).toBe('com.chatonsteroids.app.desktop');
+    expect(pkg.desktopName).toBe('com.chatonsteroids.custom.desktop');
     expect(pkg.homepage).toBe('https://github.com/totec448-spec/chat-on-steroids');
     expect(iconScript).toContain("build', 'icon.png'), pngFor(1024)");
 
