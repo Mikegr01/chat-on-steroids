@@ -101,7 +101,8 @@ function Start-AppExecutable([string]$path) {
   $start = New-Object System.Diagnostics.ProcessStartInfo
   $start.FileName = $path
   $start.Arguments = ''
-  $start.UseShellExecute = $false
+  # Keep a launched console application's stdout/stderr out of the helper's JSON-RPC pipes.
+  $start.UseShellExecute = $true
   $start.WorkingDirectory = [IO.Path]::GetDirectoryName($path)
   $process = [System.Diagnostics.Process]::Start($start)
   if ($null -eq $process) { throw 'APP_LAUNCH_FAILED: Windows did not start the executable' }
