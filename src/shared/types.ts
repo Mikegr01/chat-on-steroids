@@ -384,6 +384,8 @@ export interface ControlApiSettings {
 }
 
 export interface Config {
+  /** Explicit external executable admission; no PATH lookup, installer or bundled tools. */
+  mediaRuntime?: import('./media-runtime.js').MediaRuntimeAdmission | null;
   /**
    * Names this computer's connectors in ChatGPT, for one ChatGPT account used on several
    * computers: "Windows" makes them "Chat On Steroids Core (Windows)" and so on. Empty keeps the

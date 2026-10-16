@@ -9,6 +9,8 @@ import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
 import { terminateProcessTree } from '../exec.js';
 import { envValue, pathEntries, setEnvValue } from '../env.js';
 import { ensureManagedUv, managedUvDirectory } from './uv-runtime.js';
+import { DAVINCI_ADAPTER_SOURCE } from './davinci-adapter-source.js';
+import { createDavinciInstallPlan, discoverDavinciPythonCandidates, selectDavinciPython } from './davinci.js';
 
 /** One minimal environment for runtime discovery, installation and plugin startup. */
 export function pluginEnvironment(inherited = getDefaultEnvironment(), platform = process.platform): Record<string, string> {
@@ -258,6 +260,20 @@ export async function installSource(source: PluginSource, dir: string): Promise<
   if (source.kind === 'python') {
     if (source.command && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(source.command))
       throw new Error('Python recipes need an executable name; use Custom executable for a full command path');
+    // Resolve's native scripting bridge must run under a capability-proven normal
+    // system CPython. Never let uv choose an unrelated standalone interpreter.
+    if (source.package === 'dvr' && source.version === '1.7.0' && source.command === 'cos-davinci-adapter') {
+      const candidates = await discoverDavinciPythonCandidates();
+      if (!candidates.length) throw new Error('No installed CPython interpreter was discovered for DaVinci Resolve');
+      const selected = await selectDavinciPython(candidates);
+      const plan = createDavinciInstallPlan(dir, selected.executable);
+      await runInstaller(plan.createVenv.command, plan.createVenv.args, dir);
+      const uv = await findExecutable('uv').catch(() => ensureManagedUv());
+      await runInstaller(uv, ['pip', 'install', '--python', plan.venvPython, 'dvr==1.7.0'], dir);
+      await fs.writeFile(plan.adapterPath, DAVINCI_ADAPTER_SOURCE, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      return { command: plan.venvPython, args: [plan.adapterPath], version: source.version,
+        license: reviewedPluginLicense(source, 'See installed dist-info licenses') };
+    }
     // A user's own uv first; otherwise a pinned, checksum-verified download (see uv-runtime.ts).
     const uv = await findExecutable('uv').catch(() => ensureManagedUv());
     await runInstaller(uv, ['venv', path.join(dir, 'venv')], dir);

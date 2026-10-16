@@ -1,5 +1,6 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 /** Fonts always ship as files; anything else keeps Vite's default inlining. */
 export const rendererAssetsInlineLimit = (file: string): boolean | undefined => /\.(?:woff2?|ttf|otf|eot)$/i.test(file) ? false : undefined;
@@ -10,7 +11,13 @@ export default defineConfig({
   main: {
     // Keep node_modules external so the MCP SDK ships as real files in the asar
     // rather than being inlined by the bundler.
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), {
+      name: 'windows-ucv-native',
+      closeBundle() {
+        if (process.platform === 'win32') execFileSync(process.execPath,
+          [resolve(__dirname, 'scripts/build-windows-ucv.mjs')], { windowsHide: true, stdio: 'inherit' });
+      },
+    }],
     build: {
       rollupOptions: { input: resolve(__dirname, 'src/main/index.ts') }
     }

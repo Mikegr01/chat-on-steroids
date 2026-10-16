@@ -85,6 +85,14 @@ export interface ControlApiStatus {
     extensionVersion: string | null;
     error: string | null;
   };
+  workflowAdapter: {
+    provider: 'davinci-resolve' | null;
+    ready: boolean;
+    version: string | null;
+    epoch: string | null;
+    sourceEnd: 'inclusive' | 'exclusive' | 'unknown';
+    guardVersion: number | null;
+  };
   plugins: Array<{ id: string; name: string; enabled: boolean; status: string; enabledTools: number; error: string | null }>;
   update: { current: string; latest: string | null; stage: string; error: string | null; checkedAt: number | null };
   toolCalls: { running: number; settling: number; inFlight: number; inFlightMcpRequests: number };

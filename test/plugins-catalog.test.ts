@@ -12,8 +12,8 @@ it('uses reviewed transitional licenses only for the exact installed distributio
   expect(reviewedPluginLicense({ ...fetch.source, version: '2099.1.0' }, 'See installed dist-info licenses')).toBe('See installed dist-info licenses');
 });
 
-it('offers seven distinct reviewed recipes with packaged local artwork', async () => {
-  expect(pluginCatalog).toHaveLength(7);
+it('offers eight distinct reviewed recipes with packaged local artwork', async () => {
+  expect(pluginCatalog).toHaveLength(8);
   expect(new Set(pluginCatalog.map(recipe => recipe.id)).size).toBe(pluginCatalog.length);
   for (const recipe of pluginCatalog) {
     if (recipe.source.kind === 'remote') {
@@ -27,7 +27,7 @@ it('offers seven distinct reviewed recipes with packaged local artwork', async (
 
 it('keeps the curated catalog focused on capabilities beyond Core file and exec tools', () => {
   expect(pluginCatalog.map(recipe => recipe.id)).toEqual([
-    'blender', 'memory', 'playwright', 'fetch', 'heygen', 'recraft', 'unity',
+    'blender', 'davinci-resolve', 'memory', 'playwright', 'fetch', 'heygen', 'recraft', 'unity',
   ]);
   for (const recipe of pluginCatalog) {
     expect(recipe.tools?.length).toBeGreaterThan(0);

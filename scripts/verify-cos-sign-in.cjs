@@ -44,10 +44,24 @@ async function waitFor(what, check, timeout = 15_000) {
   }
 }
 
+/** Resolve OpenSSL: OPENSSL_BIN env → PATH → Git-for-Windows discovery. */
+function resolveOpenSSL() {
+  if (process.env.OPENSSL_BIN) return process.env.OPENSSL_BIN;
+  try { const r = spawnSync('openssl', ['version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); if (r.status === 0) return 'openssl'; } catch {}
+  if (process.platform === 'win32') {
+    try {
+      const gitPath = spawnSync('where.exe', ['git'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).stdout.trim().split(/\r?\n/)[0];
+      if (gitPath) { const candidate = path.join(path.resolve(path.dirname(gitPath), '..'), 'usr', 'bin', 'openssl.exe'); if (fs.existsSync(candidate)) return candidate; }
+    } catch {}
+  }
+  return 'openssl';
+}
+
 /** A self-signed certificate for the synthetic sites; the fixture session trusts only it. */
 function certificate() {
+  const openssl = resolveOpenSSL();
   const key = path.join(fixture, 'site.key'), cert = path.join(fixture, 'site.crt');
-  const made = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=cos-sign-in-fixture',
+  const made = spawnSync(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=cos-sign-in-fixture',
     '-addext', `subjectAltName=${SITES.map(site => `DNS:${site}`).join(',')}`, '-keyout', key, '-out', cert], { encoding: 'utf8' });
   if (made.status !== 0) throw new Error(`openssl could not make the fixture certificate: ${made.stderr}`);
   return { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };

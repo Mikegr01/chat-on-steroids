@@ -77,7 +77,6 @@ app.whenReady().then(async () => {
         assert.equal(result.blur, 'blur(22px) saturate(1.25)');
         results.push({ language, theme, zoom, state: state.name, ...result });
         if (language === 'en' && theme === 'dark' && zoom === 1.17) {
-          await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
           await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
           const png = await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
           fs.writeFileSync(path.join(output, state.name + '.png'), png.toPNG());

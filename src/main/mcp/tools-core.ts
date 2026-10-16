@@ -1,5 +1,6 @@
 import { toolDeclaration } from './tool-declarations.js';
 import { registerPlanTool } from './plan-tool.js';
+import { registerVideoEditingTool } from './video-editing-tool.js';
 import { goalWorkerChat, imageExportCapable } from '../bridge.js';
 import { exportImage, ImageExportError } from '../image-export.js';
 import { awaitRequestCorrelation } from '../session/correlation.js';
@@ -58,12 +59,13 @@ import { formatExecOutputForModel, newStreamOutput } from '../codex/exec-output.
 import { DEFAULT_TRUNCATION_POLICY, EXEC_OUTPUT_CEILING_POLICY, unifiedExecManager } from '../codex/manager.js';
 import {
   backgroundExecObligations,
+  admitExecOwner,
   execOwnershipFailure,
+  execSessionRetired,
   executionPrincipal,
   forgetExecOwner,
   MAX_UNREAD_EXEC_RESULTS_PER_CONVERSATION,
   noteExecAttended,
-  noteExecOwner,
   runningIdenticalExec
 } from '../codex/ownership.js';
 import {
@@ -252,6 +254,7 @@ function execPrincipal(): string | null {
 }
 
 export function registerCoreTools(reg: SurfaceRegistrar): void {
+  registerVideoEditingTool(reg);
   const { ctx, caps, exposedCaps } = reg;
   // Named from the live roots, never from a `/project` that may not exist: a worked example the
   // model cannot act on costs a refused call and a retry. What followed the root had the same
@@ -927,17 +930,17 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               );
             }
 
-            const processId = unifiedExecManager.allocateProcessId();
-            // Process ids are deliberately small/reusable, while chat ownership lives in a
-            // separate registry. Clear any stale row at the allocation boundary so a recycled
-            // id cannot briefly authorize its previous chat before this call publishes the new owner.
-            forgetExecOwner(processId);
-
             const ripgrep = locateRipgrep();
             const executionCommand = deriveExecArgs(shell,
               withPosixPathPrefix(boundCommand, shell.shellType, ripgrep ? nodePath.dirname(ripgrep) : null), useLoginShell);
             await validatedWorkspace();
+            const env = execChildEnvironment();
+            const processId = unifiedExecManager.allocateProcessId();
+            // Clear an obsolete id fence; the manager's synchronous launch admission
+            // establishes the exact principal before any child can become live.
+            forgetExecOwner(processId);
             const output = await unifiedExecManager.execCommand({
+              admit: () => admitExecOwner(processId, owner),
               classifyExit: (exitCode, rawOutput) => {
                 if (!batch) return nonZeroExitIsBenign(boundCommand, exitCode, rawOutput);
                 const sections = parseCommandBatchSections(rawOutput, batch.marker);
@@ -955,12 +958,12 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
               cwd: dir.real,
               displayCwd: dir.virtual,
-              env: execChildEnvironment(),
+              env,
               tty: input.tty ?? DEFAULT_TTY
             });
-            // Which exact session or temporary request principal may later write to this
-            // process id. Request custody upgrades lazily when exact correlation arrives.
-            noteExecOwner(output.processId ?? output.completedSessionId ?? null, owner);
+            if (execSessionRetired(owner)) {
+              return fail('exec_command failed: the owning local session was deleted while this command started.');
+            }
             const responseText = execCommandResponseText(output);
             // A search that found nothing exits 1 and has not failed. Recording it as an
             // error made a session's error count meaningless; see exec-hints.ts for why this

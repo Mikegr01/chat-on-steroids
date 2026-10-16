@@ -37,6 +37,8 @@ function removePluginFolder(directory: string): Promise<void> {
 import { PluginOAuth, PluginNeedsAuth, PluginOAuthSetupError, clearPluginOAuth } from './oauth.js';
 export { PLUGIN_MAX_TOOLS, PLUGIN_MAX_SCHEMA_BYTES } from './exposure.js';
 import { PLUGIN_DISCOVERY_MAX_BYTES, PLUGIN_DISCOVERY_MAX_TOOLS } from './exposure.js';
+import { DAVINCI_PUBLIC_TOOLS, davinciRuntimeEnvironment, parseDavinciHealthResult, validateDavinciToolSurface } from './davinci.js';
+import { VIDEO_ACCEPTANCE_GUARD_VERSION } from '../../shared/video-acceptance-target.js';
 
 interface RecordEntry extends Omit<PluginView, 'tools'> {
   /** Validated discovery belongs to the installation, not a replaceable connection. */
@@ -152,6 +154,7 @@ export class PluginManager {
       plugins: this.records.map(({ directory: _, launch: __, disabledTools, catalog, ...row }) => ({
         ...row,
         license: reviewedPluginLicense({ ...row.source, version: row.version }, row.license),
+        ...(row.catalogId === 'davinci-resolve' && row.status === 'ready' ? { davinci: { sourceEnd: 'inclusive' as const, guardVersion: VIDEO_ACCEPTANCE_GUARD_VERSION } } : {}),
         tools: catalog.map(tool => ({
           name: tool.name, exposedName: tool.name, description: tool.description,
           enabled: !disabledTools.includes(tool.name),
@@ -721,6 +724,8 @@ export class PluginManager {
         // Explicit user configuration/CLI options retain their normal precedence.
         if (row.source.kind === 'npm' && row.source.package === '@playwright/mcp')
           setEnvValue(env, 'PLAYWRIGHT_MCP_CODEGEN', 'none');
+        if (row.catalogId === 'davinci-resolve')
+          for (const [key, value] of Object.entries(davinciRuntimeEnvironment())) setEnvValue(env, key, value);
         for (const [k, v] of Object.entries({ ...row.config, ...secrets, ...launch.env })) setEnvValue(env, k, v);
         const data = path.join(this.root, row.id, 'data');
         await fs.mkdir(data, { recursive: true });
@@ -742,6 +747,14 @@ export class PluginManager {
       }
       const tools = await this.discover(client);
       signal.throwIfAborted();
+      if (row.catalogId === 'davinci-resolve') {
+        validateDavinciToolSurface(tools.map(tool => tool.name));
+        const probe = tools.find(tool => tool.name === DAVINCI_PUBLIC_TOOLS[0]);
+        if (!probe) throw new Error('DaVinci resolve_health probe is unavailable');
+        const result = await client.callTool({ name: probe.name, arguments: {} }, { timeout: 15000, toolDefinition: probe });
+        const health = parseDavinciHealthResult(result);
+        if (!health.ready) throw new Error(`DaVinci Resolve backend ${health.code}${health.error ? `: ${health.error}` : ''}`);
+      }
       if (row.catalogId === 'blender') {
         const probe = tools.find((t) => t.name === 'get_scene_info');
         if (!probe) throw new Error('Blender scene probe is unavailable');
@@ -817,6 +830,26 @@ export class PluginManager {
   tools(): Tool[] { return [...this.exposure().tools]; }
   async call(name: string, args: Record<string, unknown> = {},
     onOutcome?: (outcome: 'tool_rejected' | 'tool_execution_error') => void): Promise<CallToolResult> {
+    return this.invoke(name, args, onOutcome);
+  }
+  /** Native video execution retains the exact curated owner and plugin admission path. */
+  async callCuratedResolve(name: 'resolve_inspect' | 'resolve_assemble_rough_cut', args: Record<string, unknown>,
+    expectedEpoch: string, assertOwner: () => Promise<void>): Promise<CallToolResult> {
+    const guard = async () => {
+      await assertOwner();
+      const snapshot = this.snapshot();
+      const rows = snapshot.plugins.filter(row => row.catalogId === 'davinci-resolve' && row.enabled && row.status === 'ready');
+      if (rows.length !== 1 || `${rows[0]!.id}:${snapshot.schemaRevision}` !== expectedEpoch ||
+        this.exposure().owners.get(name) !== rows[0]!.id ||
+        !rows[0]!.tools.some(tool => tool.name === name && tool.enabled && tool.published))
+        throw new Error('Curated Resolve owner/publication changed before dispatch');
+    };
+    await guard();
+    return this.invoke(name, args, undefined, guard);
+  }
+  private async invoke(name: string, args: Record<string, unknown>,
+    onOutcome?: (outcome: 'tool_rejected' | 'tool_execution_error') => void,
+    assertDispatch?: () => Promise<void>): Promise<CallToolResult> {
     // The invocation owner knows whether a tool failed or was never admitted.
     // Keep this internal evidence out of the upstream MCP result/content contract.
     const errorResult = (text: string, outcome: 'tool_rejected' | 'tool_execution_error' = 'tool_execution_error'): CallToolResult => {
@@ -828,6 +861,7 @@ export class PluginManager {
     let acquired: { row: RecordEntry; live: Live; tool: Tool } | undefined;
     try {
       acquired = await this.serial(this.exposure().owners.get(name) ?? name, async () => {
+        if (assertDispatch) await assertDispatch();
         if (this.closing) return;
         const owner = this.exposure().owners.get(name);
         const row = this.records.find(row => row.id === owner && row.enabled);
@@ -847,6 +881,7 @@ export class PluginManager {
     } catch {
       const reason = this.closing
         ? 'PLUGIN_UNAVAILABLE: Plugins are shutting down.'
+        : assertDispatch ? 'PLUGIN_OWNER_CHANGED: Curated Resolve admission changed before dispatch.'
         : 'PLUGIN_START_FAILED: The plugin server could not start. Check its settings and application.';
       return refused(reason);
     }
@@ -881,6 +916,8 @@ export class PluginManager {
       return refused(reason);
     }
     const { row, live, tool } = acquired;
+    try { if (assertDispatch) await assertDispatch(); }
+    catch { this.release(row, live); return refused('PLUGIN_OWNER_CHANGED: Curated Resolve admission changed before dispatch.'); }
     try {
       // Supply our bounded discovery result: SDK validates output against it without
       // rediscovery or the modern header-mismatch retry path for ambiguous mutations.

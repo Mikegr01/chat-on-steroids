@@ -2,6 +2,7 @@ import { DEFAULT_HELPER_CHAT_MODEL, SUPERSEDED_HELPER_CHAT_MODELS } from '../sha
 import { UI_LANGUAGES } from '../shared/ui-language.js';
 import { DEFAULT_RECORDING_STORAGE_GIB, REASONING_EFFORTS, RECORDING_STORAGE_LIMITS_GIB, type RecordingStorageLimitGiB } from '../shared/session.js';
 import { appearanceSchema } from './appearance-schema.js';
+import { mediaRuntimeAdmissionSchema } from '../shared/media-runtime.js';
 import { BROWSER_BRIDGE_PORTS } from '../shared/browser-bridge.js';
 import { CONNECTOR_SUFFIX_MAX, CONNECTOR_SUFFIX_PATTERN } from '../shared/connector-names.js';
 /**
@@ -291,6 +292,7 @@ const commandAllowlistRuleSchema = z.string().max(MAX_COMMAND_ALLOWLIST_RULE_CHA
 });
 
 const configSchema = z.object({
+  mediaRuntime: mediaRuntimeAdmissionSchema.nullable().optional().default(null).catch(null),
   // A config written by hand — or by a build before `/skills` was reserved — must not be
   // able to claim a reserved virtual root. Renamed rather than rejected: a single bad root
   // name is not a reason to throw away the whole config and every other approved folder.
@@ -559,6 +561,7 @@ function firstLaunchCapabilities(platform: NodeJS.Platform, release?: string): C
 
 export function defaultConfig(platform: NodeJS.Platform = process.platform, release?: string): Config {
   return {
+    mediaRuntime: null,
     roots: [],
     capabilities: firstLaunchCapabilities(platform, release),
     readOnly: false,

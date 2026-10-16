@@ -1,4 +1,6 @@
 import type { WorkspaceTerminalEvent, WorkspaceTerminalInfo } from '../shared/workspace-terminal.js';
+import type { MediaRuntimeDiagnostics, MediaRuntimeOperatorResult } from '../shared/media-runtime.js';
+import type { UcvValidationResult } from '../shared/ucv-validation.js';
 import type { DictationEvent } from '../shared/dictation.js';
 import type { ChatModelCatalog } from '../shared/chat-models.js';
 import type { GoalModel } from '../shared/goal-reasoning.js';
@@ -214,6 +216,15 @@ const api = {
   attachText: (text: string) => call<InputAttachment>('sessions:attachText', { text }),
   getUsage: () => call<UsageOverview>('usage:get'),
   getState: () => call<AppState>('state:get'),
+  getVideoMediaRuntime: () => call<MediaRuntimeDiagnostics>('video:runtime-status'),
+  admitVideoMediaRuntime: (ffprobePath: string, ffmpegPath: string) => call<MediaRuntimeOperatorResult>('video:runtime-admit', { ffprobePath, ffmpegPath }),
+  pickVideoMediaExecutable: (tool: 'ffprobe' | 'ffmpeg') => call<string | null>('video:runtime-pick', tool),
+  inspectVideoJob: (jobId: string) => call<unknown>('video:inspect', { jobId }),
+  authorizeVideoJob: (jobId: string, preparedHash: string) => call<unknown>('video:authorize', { jobId, preparedHash }),
+  executeVideoJob: (jobId: string, expectedPreparedHash: string, authorizationId: string, reviewedManifestHash: string) =>
+    call<unknown>('video:execute', { jobId, expectedPreparedHash, authorizationId, reviewedManifestHash }),
+  confirmCapabilityAdmission: (jobId: string, expectedFingerprint: string) => call<unknown>('video:confirm-capability-admission', { jobId, expectedFingerprint }),
+  validateWindowsVerification: () => call<UcvValidationResult>('video:validate-ucv'),
   resetPluginRefresh: () => call<AppState>('plugin-refresh:reset'),
   /** Sets an unreadable credentials file aside (kept as a backup) so keys can be saved again. */
   startFreshCredentials: () => call<{ state: AppState; setAside: boolean }>('credentials:start-fresh'),

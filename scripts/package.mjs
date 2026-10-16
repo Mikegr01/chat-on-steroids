@@ -42,6 +42,7 @@ for (const arch of arches) {
   run(node, ['scripts/fetch-ripgrep.mjs', ...targetArgs]);
   run(node, ['scripts/prepare-packaging-native.mjs', ...targetArgs]);
   run(node, ['scripts/prepare-macos-desktop-helper.mjs', ...targetArgs]);
+  if (platform === 'win32') run(node, ['scripts/build-windows-ucv.mjs', arch]);
 
   const builderArgs = [
     path.join('node_modules', 'electron-builder', 'out', 'cli', 'cli.js'),

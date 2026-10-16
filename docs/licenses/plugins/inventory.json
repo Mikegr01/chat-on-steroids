@@ -55,6 +55,22 @@
     "repository": "https://github.com/ahujasid/blender-mcp"
   },
   {
+    "id": "davinci-resolve",
+    "package": "dvr",
+    "version": "1.7.0",
+    "license": "MIT",
+    "repository": "https://github.com/mhadifilms/dvr",
+    "notices": [
+      {
+        "file": "davinci-LICENSE",
+        "source": "https://raw.githubusercontent.com/mhadifilms/dvr/v1.7.0/LICENSE",
+        "sha256": "04baff806d37ac9852b3c2733d020097875fab8080dac3b0305c12b0fef719d3"
+      }
+    ],
+    "checkedOn": "2026-10-05",
+    "bundledWithApp": false
+  },
+  {
     "id": "fetch",
     "package": "mcp-server-fetch",
     "version": "2026.8.18",

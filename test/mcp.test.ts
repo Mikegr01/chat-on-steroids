@@ -16,6 +16,8 @@
 
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { watch } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +35,8 @@ import { serverInstructions } from '../src/main/mcp/instructions.js';
 import { SURFACE_LIST, surfaceDefinition, type SurfaceId } from '../src/main/mcp/surfaces.js';
 import {
   createSession,
+  deleteSession,
+  getSession,
   initSessionStore,
   readRecentEvents,
   rebindSession,
@@ -78,6 +82,17 @@ import { unifiedExecManager } from '../src/main/codex/manager.js';
 import * as execHints from '../src/main/exec-hints.js';
 import { locateRipgrep } from '../src/main/ripgrep.js';
 import { IS_WINDOWS, makeTempDir, removeTempDir, writeTree } from './helpers.js';
+
+// Only the new admission race faults taskkill. All shells and descendants remain real.
+const admissionFault = vi.hoisted(() => ({ refuseTreeKill: false, calls: 0 }));
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
+    if (!admissionFault.refuseTreeKill || path.basename(args[0]).toLowerCase() !== 'taskkill.exe') return actual.spawn(...args);
+    admissionFault.calls++;
+    return actual.spawn(process.execPath, ['-e', 'process.exit(1)'], { windowsHide: true, stdio: 'ignore' });
+  } };
+});
 
 // ---------------------------------------------------------------- transport
 
@@ -633,7 +648,7 @@ describe('surface boundaries', () => {
     everything();
     const names = toolNames(await core('tools/list'));
     // find is absent because exec_command is present — they are mutually exclusive.
-    expect(names).toEqual(['agents', 'apply_patch', 'exec', 'exec_command', 'read', 'save_image', 'update_plan', 'view_image', 'write_stdin']);
+    expect(names).toEqual(['agents', 'apply_patch', 'exec', 'exec_command', 'read', 'save_image', 'update_plan', 'video_editing', 'view_image', 'write_stdin']);
     for (const name of surfaceDefinition('desktop').tools.filter(name => name !== 'exec')) expect(names, name).not.toContain(name);
   });
 
@@ -942,7 +957,7 @@ describe('surface boundaries', () => {
     const desktopTools = toolList(await desktop('tools/list'));
 
     // Each populated surface includes code mode; find and the shell exec pair remain exclusive.
-    expect(coreTools).toHaveLength(9);
+    expect(coreTools).toHaveLength(10);
     expect(desktopTools).toHaveLength(BROWSER_TOOLS.length + (IS_WINDOWS ? 16 : process.platform === 'darwin' ? 3 : 1));
 
     // And the size, which is what a discovery pull actually costs the model on every
@@ -952,7 +967,7 @@ describe('surface boundaries', () => {
     // catches the regression it exists to catch.
     const coreBytes = Buffer.byteLength(JSON.stringify(coreTools), 'utf8');
     const desktopBytes = Buffer.byteLength(JSON.stringify(desktopTools), 'utf8');
-    expect(coreBytes, `core tools/list is ${coreBytes} bytes`).toBeLessThan(20_500);
+    expect(coreBytes, `core tools/list is ${coreBytes} bytes`).toBeLessThan(22_500);
     expect(desktopBytes, `desktop tools/list is ${desktopBytes} bytes`).toBeLessThan(IS_WINDOWS ? 24_000 : 24_500);
 
     // Per tool as well as per surface, so one schema cannot quietly eat the whole budget
@@ -3260,14 +3275,15 @@ describe('exec_command and write_stdin', () => {
       "const readline=require('node:readline'); const rl=readline.createInterface({input:process.stdin,crlfDelay:Infinity}); let n=0; rl.on('line',(line)=>{n++; console.log((n===1?'first=':'second=')+line); if(n===2) rl.close();});\n",
       'utf8'
     );
-    const started = await core('tools/call', {
-      name: 'exec_command',
-      arguments: {
-        cmd: 'node interactive-stdin.cjs',
-        workdir: '/workspace',
-        tty: true,
-        yield_time_ms: 25
-      }
+    // One unresolved workflow owns this terminal through its stable ingress request id.
+    const sessionCall = (name: string, args: Record<string, unknown>) => modern(
+      'tools/call', { name, arguments: args }, { 'x-request-id': 'wfr_interactive_semantics/att1' }
+    );
+    const started = await sessionCall('exec_command', {
+      cmd: 'node interactive-stdin.cjs',
+      workdir: '/workspace',
+      tty: true,
+      yield_time_ms: 25
     });
     expect(started.body.result?.isError).not.toBe(true);
     expect(textOf(started)).toContain('Process running with session ID');
@@ -3276,22 +3292,16 @@ describe('exec_command and write_stdin', () => {
     const sessionId = Number(sessionIdText);
 
     // write_stdin sends bytes exactly as supplied. Without a newline ReadLine must keep waiting.
-    const partial = await core('tools/call', {
-      name: 'write_stdin',
-      arguments: {
-        session_id: sessionId,
-        chars: 'raw-no-newline',
-        yield_time_ms: 250
-      }
+    const partial = await sessionCall('write_stdin', {
+      session_id: sessionId,
+      chars: 'raw-no-newline',
+      yield_time_ms: 250
     });
     expect(partial.body.result?.isError).not.toBe(true);
     expect(textOf(partial)).toContain(`Process running with session ID ${sessionId}`);
     expect(textOf(partial)).not.toContain('first=');
 
-    const first = await core('tools/call', {
-      name: 'write_stdin',
-      arguments: { session_id: sessionId, chars: '\r', yield_time_ms: 5_000 }
-    });
+    const first = await sessionCall('write_stdin', { session_id: sessionId, chars: '\r', yield_time_ms: 5_000 });
     expect(first.body.result?.isError).not.toBe(true);
     expect(textOf(first)).toContain('first=raw-no-newline');
     expect(textOf(first)).toContain(`Process running with session ID ${sessionId}`);
@@ -3299,18 +3309,12 @@ describe('exec_command and write_stdin', () => {
     // Check the unread cursor while the child is still idle. ConPTY may emit a *new* screen
     // repaint containing the first line when the console exits; those bytes are not a replay
     // by CoS and must stay in the raw terminal stream.
-    const idle = await core('tools/call', {
-      name: 'write_stdin',
-      arguments: { session_id: sessionId, chars: '', yield_time_ms: 1_000 }
-    });
+    const idle = await sessionCall('write_stdin', { session_id: sessionId, chars: '', yield_time_ms: 1_000 });
     expect(idle.body.result?.isError).not.toBe(true);
     expect(idle.body.result?.structuredContent?.output).toBe('');
     expect(textOf(idle)).toContain(`Process running with session ID ${sessionId}`);
 
-    const second = await core('tools/call', {
-      name: 'write_stdin',
-      arguments: { session_id: sessionId, chars: 'done\r', yield_time_ms: 5_000 }
-    });
+    const second = await sessionCall('write_stdin', { session_id: sessionId, chars: 'done\r', yield_time_ms: 5_000 });
     expect(second.body.result?.isError).not.toBe(true);
     expect(textOf(second)).toContain('second=done');
     expect(textOf(second)).toContain('Process exited with code 0');
@@ -3437,6 +3441,141 @@ describe('exec sessions belong to the chat that opened them', () => {
       requestId ? { 'x-request-id': `${requestId}/att1` } : {}
     );
 
+  const awaitOwnedOutput = async (requestId: string, sessionId: number, expected: string, initial: string): Promise<string> => {
+    let observed = initial;
+    for (let attempt = 0; attempt < 3 && !observed.includes(expected); attempt++) {
+      const polled = await asChat(requestId, 'write_stdin', {
+        session_id: sessionId, chars: '', yield_time_ms: 5_000
+      });
+      expect(failed(polled), textOf(polled)).toBe(false);
+      observed += textOf(polled);
+    }
+    expect(observed, `Expected ${expected} in owned session ${sessionId}; observed:\n${observed}`).toContain(expected);
+    return observed;
+  };
+
+  it('keeps separate requests without durable identity out of each other\'s exec sessions', async () => {
+    const started = await asChat(null, 'exec_command', {
+      cmd: IS_WINDOWS ? '$line = [Console]::In.ReadLine(); Write-Output (\'got=\' + $line)' : "IFS= read -r line; printf 'got=%s\\n' \"$line\"",
+      workdir: '/workspace', tty: true, yield_time_ms: 25
+    });
+    expect(failed(started), textOf(started)).toBe(false);
+    const processId = Number(textOf(started).match(/Process running with session ID (\d+)/)?.[1]);
+    expect(Number.isInteger(processId), textOf(started)).toBe(true);
+    try {
+      const strangerRead = await asChat(null, 'write_stdin', { session_id: processId, chars: '', yield_time_ms: 100 });
+      expect(failed(strangerRead), textOf(strangerRead)).toBe(true);
+      const strangerWrite = await asChat(null, 'write_stdin', { session_id: processId, chars: 'stolen\r', yield_time_ms: 100 });
+      expect(failed(strangerWrite), textOf(strangerWrite)).toBe(true);
+      expect(textOf(strangerWrite)).not.toContain('got=stolen');
+    } finally {
+      await unifiedExecManager.terminateProcess(processId);
+    }
+  });
+
+  it('retires only the deleted durable session\'s exec process and custody', async () => {
+    const deleted = await createSession({ conversationId: 'exec-delete-owner' });
+    const retained = await createSession({ conversationId: 'exec-delete-other' });
+    expect(prove('wfr_exec_delete_owner', 'exec-delete-owner', deleted.id)).toBe('stored');
+    expect(prove('wfr_exec_delete_other', 'exec-delete-other', retained.id)).toBe('stored');
+    const command = IS_WINDOWS ? '$line = [Console]::In.ReadLine(); Write-Output (\'got=\' + $line)' : "IFS= read -r line; printf 'got=%s\\n' \"$line\"";
+    const open = (requestId: string) => asChat(requestId, 'exec_command', {
+      cmd: command, workdir: '/workspace', tty: true, yield_time_ms: 25
+    });
+    const owned = await open('wfr_exec_delete_owner');
+    const other = await open('wfr_exec_delete_other');
+    const ownedId = Number(textOf(owned).match(/Process running with session ID (\d+)/)?.[1]);
+    const otherId = Number(textOf(other).match(/Process running with session ID (\d+)/)?.[1]);
+    expect(Number.isInteger(ownedId), textOf(owned)).toBe(true);
+    expect(Number.isInteger(otherId), textOf(other)).toBe(true);
+    expect(execOwner(ownedId)).toBe(deleted.id);
+    expect(execOwner(otherId)).toBe(retained.id);
+    expect(unifiedExecManager.listProcesses().map(row => row.processId)).toEqual(expect.arrayContaining([ownedId, otherId]));
+    try {
+      await deleteSession(deleted.id);
+      expect(unifiedExecManager.listProcesses().some(row => row.processId === ownedId)).toBe(false);
+      expect(execOwner(ownedId)).toBeNull();
+      expect(unifiedExecManager.listProcesses().some(row => row.processId === otherId)).toBe(true);
+      expect(execOwner(otherId)).toBe(retained.id);
+      await deleteSession(deleted.id);
+      const replacement = await createSession({ conversationId: 'exec-delete-replacement' });
+      expect(prove('wfr_exec_delete_replacement', 'exec-delete-replacement', replacement.id)).toBe('stored');
+      const refused = await asChat('wfr_exec_delete_replacement', 'write_stdin', { session_id: ownedId, chars: '' });
+      expect(failed(refused)).toBe(true);
+    } finally {
+      await unifiedExecManager.terminateProcess(ownedId);
+      await unifiedExecManager.terminateProcess(otherId);
+    }
+  });
+
+  it.runIf(IS_WINDOWS)('binds initial exec custody before concurrent deletion with a live grandchild', async () => {
+    const session = await createSession({ conversationId: 'exec-initial-admission-race' });
+    expect(prove('wfr_exec_initial_admission_race', 'exec-initial-admission-race', session.id)).toBe('stored');
+    const ready = path.join(approved, 'initial-exec-tree.json');
+    const script = path.join(approved, 'initial-exec-tree.cjs');
+    const grandchild = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready + '.tmp')},JSON.stringify({child:process.ppid,grandchild:process.pid}));fs.renameSync(${JSON.stringify(ready + '.tmp')},${JSON.stringify(ready)});setInterval(()=>{},1000);`;
+    const child = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:true,windowsHide:true,stdio:'ignore'});setInterval(()=>{},1000);`;
+    await fs.writeFile(script, `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{detached:true,windowsHide:true,stdio:'ignore'});setInterval(()=>{},1000);`);
+    let tree!: { child: number; grandchild: number };
+    const watcher = watch(approved);
+    const readyBarrier = new Promise<void>((resolve, reject) => {
+      watcher.on('error', reject);
+      watcher.on('change', (_event, filename) => {
+        if (filename !== path.basename(ready)) return;
+        void fs.readFile(ready, 'utf8').then(value => { tree = JSON.parse(value); resolve(); }, reject);
+      });
+    });
+    let processId: number | undefined;
+    let initial: Promise<any> | undefined;
+    let settled = false;
+    try {
+      // Freeze only the app's collection/early-exit timers. OS readiness is a real
+      // atomic file-publication barrier, and helper refusal is a real process exit.
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      initial = asChat('wfr_exec_initial_admission_race', 'exec_command', {
+        cmd: `& ${quote(process.execPath)} ${quote(script)}`, workdir: '/workspace', tty: false, yield_time_ms: 30_000
+      }).then(value => { settled = true; return value; });
+      await readyBarrier;
+      await vi.advanceTimersByTimeAsync(150);
+      const row = unifiedExecManager.listProcesses().find(row => row.command.includes('initial-exec-tree.cjs'));
+      expect(row).toBeDefined();
+      processId = row!.processId;
+      const entry = (unifiedExecManager as unknown as { processes: Map<number, { initialExecCommandActive: boolean }> }).processes.get(processId)!;
+      const before = { visible: true, active: entry.initialExecCommandActive, settled, owner: execOwner(processId) };
+      expect(() => process.kill(tree.grandchild, 0)).not.toThrow();
+      admissionFault.refuseTreeKill = true;
+      admissionFault.calls = 0;
+      const deletion = await deleteSession(session.id).then(() => 'completed', () => 'unresolved');
+      await vi.advanceTimersByTimeAsync(30_000);
+      await initial;
+      const retry = await deleteSession(session.id).then(() => 'completed', () => 'unresolved');
+      const after = { pending: unifiedExecManager.listProcesses().find(row => row.processId === processId)?.retirementPending,
+        owner: execOwner(processId), sessionPresent: (await getSession(session.id)) !== null };
+      expect(admissionFault.calls).toBeGreaterThan(0);
+      expect(() => process.kill(tree.grandchild, 0)).not.toThrow();
+      // RED: before.owner=null; deletion/retry=completed; after.pending=true,
+      // owner=null, sessionPresent=false while the independently observed PID lives.
+      expect({ before, deletion, retry, after }).toEqual({
+        before: { visible: true, active: true, settled: false, owner: session.id },
+        deletion: 'unresolved', retry: 'unresolved',
+        after: { pending: true, owner: session.id, sessionPresent: true }
+      });
+    } finally {
+      watcher.close();
+      admissionFault.refuseTreeKill = false;
+      vi.useRealTimers();
+      if (processId !== undefined) {
+        await unifiedExecManager.terminateProcess(processId);
+        unifiedExecManager.releaseProcessId(processId);
+      }
+      await initial;
+      for (const pid of [tree?.grandchild, tree?.child]) {
+        if (pid) spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      }
+    }
+  });
+
   it('notes the served request id for its surface', async () => {
     const spy = vi.spyOn(identity, 'noteServedRequest');
     expect(prove('wfr_identity_served', 'conv-identity')).toBe('stored');
@@ -3451,7 +3590,7 @@ describe('exec sessions belong to the chat that opened them', () => {
 
     await fs.writeFile(
       path.join(approved, 'owned-stdin.cjs'),
-      "const readline=require('node:readline'); const rl=readline.createInterface({input:process.stdin,crlfDelay:Infinity}); rl.on('line',(line)=>{ console.log('echo='+line); if(line==='bye') rl.close(); });\n",
+      "const readline=require('node:readline'); const rl=readline.createInterface({input:process.stdin,crlfDelay:Infinity}); console.log('stdin-ready'); rl.on('line',(line)=>{ console.log('echo='+line); if(line==='bye') rl.close(); });\n",
       'utf8'
     );
 
@@ -3464,6 +3603,7 @@ describe('exec sessions belong to the chat that opened them', () => {
     expect(started.body.result?.isError).not.toBe(true);
     const sessionId = Number(textOf(started).match(/Process running with session ID (\d+)/)?.[1]);
     expect(Number.isInteger(sessionId)).toBe(true);
+    await awaitOwnedOutput('wfr_execown_opener', sessionId, 'stdin-ready', textOf(started));
 
     // The other chat can name that small integer just as easily as its owner can. Codex never
     // has to think about this because its manager hangs off one conversation's services.
@@ -3511,7 +3651,7 @@ describe('exec sessions belong to the chat that opened them', () => {
     await lateProof;
     expect(lateProofResult).toBe('stored');
     expect(recovered.body.result?.isError).not.toBe(true);
-    expect(textOf(recovered)).toContain('echo=anon');
+    await awaitOwnedOutput(lateRequestId, sessionId, 'echo=anon', textOf(recovered));
 
 
     const owner = await asChat('wfr_execown_opener', 'write_stdin', {
@@ -3520,8 +3660,8 @@ describe('exec sessions belong to the chat that opened them', () => {
       yield_time_ms: 5_000
     });
     expect(owner.body.result?.isError).not.toBe(true);
-    expect(textOf(owner)).toContain('echo=bye');
-    expect(textOf(owner)).toContain('Process exited with code 0');
+    const completed = await awaitOwnedOutput('wfr_execown_opener', sessionId, 'echo=bye', textOf(owner));
+    expect(completed).toContain('Process exited with code 0');
   });
 
   it('distinguishes unresolved, anonymous and unavailable process custody and reports identity recovery', async () => {
@@ -3649,9 +3789,8 @@ describe('exec sessions belong to the chat that opened them', () => {
       try { return allocate(); } finally { random.mockRestore(); }
     });
     // Hold only publication of the real process result, not process creation or ownership.
-    // The process is alive and writable, but the MCP handler has not yet installed its new
-    // owner. This is the same custody gap without racing a five-second shell-startup budget
-    // against the one-second exec yield on a loaded Windows runner.
+    // The process is alive and writable with its admission-bound owner while the initial
+    // tool response is held. This tests the authority boundary without a startup timing race.
     const execute = unifiedExecManager.execCommand.bind(unifiedExecManager);
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -3690,17 +3829,16 @@ describe('exec sessions belong to the chat that opened them', () => {
       expect(boundary.output.processId).toBe(recycledId);
       expect(unifiedExecManager.listProcesses().some(entry => entry.processId === recycledId)).toBe(true);
 
-      // Allocation must have removed the stale principal before the new process became
-      // writable. The old chat knows this integer from its own previous session, but it no
-      // longer has authority over what now happens to occupy that slot.
-      expect(execOwner(recycledId)).toBeNull();
+      // Admission replaces the obsolete principal before the new process becomes writable.
+      // The old chat knows the integer, but custody already belongs to the new session.
+      expect(execOwner(recycledId)).toBe(`session-conv-execown-new-${run}`);
       const stolen = await asChat(`wfr_execown_old_recycled_${run}`, 'write_stdin', {
         session_id: recycledId,
         chars: 'stolen\r',
         yield_time_ms: 50
       });
       expect(stolen.body.result?.isError).toBe(true);
-      expect(textOf(stolen)).toContain('EXEC_SESSION_UNAVAILABLE');
+      expect(textOf(stolen)).toContain('EXEC_SESSION_OWNER_MISMATCH');
 
       release();
       const started = await starting;
@@ -3718,8 +3856,8 @@ describe('exec sessions belong to the chat that opened them', () => {
         yield_time_ms: 5_000
       });
       expect(owner.body.result?.isError, textOf(owner)).not.toBe(true);
-      expect(textOf(owner)).toContain('got=owner');
-      expect(textOf(owner)).toContain('Process exited with code 0');
+      const completed = await awaitOwnedOutput('wfr_execown_new_recycled', recycledId, 'got=owner', textOf(owner));
+      expect(completed).toContain('Process exited with code 0');
     } finally {
       release();
       await starting?.catch(() => undefined);

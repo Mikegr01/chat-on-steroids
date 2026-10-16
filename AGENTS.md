@@ -250,6 +250,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Extension | `extension/{manifest.json,chatgpt-dom.js,content.js,fiber.js,background.js,usage.js,overlay.css,popup.html,popup.css,popup.js}`: injection worlds, native observations/actions, journal and UI. |
 | Models/usage | `src/main/chat-models.ts`, `session/usage.ts`; `src/shared/{chat-models,usage}.ts`; `src/renderer/{chat-models,context-meter,usage}.ts`: account observations vs local estimates. |
 | External plugins | `src/main/plugins/{catalog,installer,manager,exposure,oauth}.ts`, `plugins-ipc.ts`, `plugin-refresh.ts`, `src/shared/{plugins,plugin-refresh}.ts`, `src/renderer/plugins.ts`. |
+| S7.5 video editing | `src/main/video-editing/*`, `src/shared/{video-editing,video-operator,media-runtime,ucv-validation}.ts`, `src/main/mcp/video-editing-tool.ts`, `src/main/plugins/davinci*.ts`, `src/renderer/{video-operator-controls,video-media-runtime,ucv-validation}.ts`, `native/windows-ucv/*`: bounded preparation, native-confirmed one-shot execution and observation-only recovery. See `docs/kosmosyn-s7-5-video-editing.md`. |
 | Renderer boundary | `src/main/ipc.ts`, `edit-context-menu.ts`, `src/preload/index.ts`; `src/renderer/{main,chat,dom,tool-result,timeline-scroll,sidebar-resize,browser-preferences,i18n}.ts`, `locales/{es,zh-CN,zh-TW,ja,tr,fr,pt-PT}.json`, `index.html`, `styles.css`. |
 | Appearance | `src/shared/appearance.ts`, `src/main/appearance-schema.ts`, `src/renderer/appearance.ts`: bounded saved colors/typography, field-wise Settings merge, immediate semantic CSS projection. `window-layout.ts` shares native caption/backing colors. |
 | Native Desktop | `src/main/computer/{index,helper,browser-chords,windows-api,windows-capture,windows-apps,windows-keys}.ts`, `src/shared/windows-computer.ts`, `mcp/tools-desktop-{windows,macos}.ts`, `native/macos-desktop-helper/*`, `native/macos-desktop-addon/*`. |
@@ -280,6 +281,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Browser repair | `bridge.ts` process-memory episodes | Re-earn from live evidence; never restore an old reload token as action authority. |
 | Catalog/usage | Saved successful `chat-models`; derived `usage-cache`; live usage snapshot | Catalog is observation, not a send receipt; estimates are not provider billing. |
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
+| Video jobs and operation custody | `video-editing/store.ts` / `state/video-editing-jobs.json` | Strict durable job ledger; immutable evidence and revision-checked preparation, exclusive operation claim before curated dispatch, no automatic replay after ambiguity. Native operator authorization binds exact prepared job, target and state. |
 | Connector proof | `connector-proof.ts` / `connector-proof.json` | Per surface and tunnel: newest request, tool call and installed evidence from earlier runs. Setup reads it as "created in ChatGPT"; it is never call authority. A changed tunnel id has no proof. |
 | Control API endpoint | `control-api.ts` / `control-api/{token,endpoint.json}` | Per launch, only while the listener runs. Token written before the endpoint; endpoint removed first on stop. A crash can leave both behind, so a caller must still reach the port. |
 
@@ -1065,6 +1067,23 @@ awaits correlation. Only that request can initially continue its process. Exact 
 the request principal equivalent to its durable session, so A→B compaction lets B continue
 A's live terminal and receive its retained output without rerunning a command.
 Another session/worker cannot poll or write it. Anonymous process custody is non-adoptable.
+Core binds that custody through a synchronous manager admission callback immediately before
+native launch. `ownership.ts` canonicalizes the exact principal and refuses a retired session;
+the manager registers the launched handle before its first output/early-exit wait and only then
+notifies observers. After asynchronous PTY preparation it rechecks the exact reservation
+incarnation. Thus deletion either finds the already-owned process or retirement refuses launch.
+Failed setup releases only its own reservation/custody; delayed initial responses cannot bind
+an owner or act on a recycled id. Late exact request proof for a retired session grants cleanup
+custody only, triggers retirement and never restores execution access.
+Windows retirement requires successful tree termination before dropping the manager row or
+custody. Missing/refused/timed-out taskkill, including a missing leader after partial termination,
+leaves `retirementPending` in the existing manager and rejects session deletion. Leader exit,
+output collection, explicit id release and shutdown cannot clear that unresolved tree. Shutdown
+attempts every sibling and reports failures through its existing bounded teardown. Custody is
+app-lifetime state; this is not durable process recovery or OS containment.
+Pipe Ctrl-C and explicit termination publish one shared in-flight retirement promise before
+native work starts. Initial exec (including early leader exit) joins it before publication;
+only successful retirement clears pending custody. Concurrent cleanup joins the same operation.
 Refusals distinguish unavailable ids, anonymous launch custody, missing caller proof and a
 different owning session. Only missing caller proof invites retry after identity recovery and
 participates in the existing recovered-identity notice. No refusal proves a command should be
@@ -4741,7 +4760,11 @@ npm run dist:dir:mac:x64            # example unpacked target on a matching host
 ```
 
 Use `npm ci` for an intentionally needed reproducible dependency install, not as routine
-cleanup of this shared tree. `verify:ci` fetches rg, checks privacy/notices/native-source metadata,
+cleanup of this shared tree. `verify:ci` first runs `verify:windows-native`: Windows compiles the
+host UCV DLL and requires real Node plus production-loader Electron ABI/availability checks.
+Missing/unloadable DLLs and missing exports fail; only non-Windows hosts skip native execution.
+`verify:windows-native -- --load-only` audits the staged artifact without rebuilding it first.
+The remaining `verify:ci` sequence fetches rg, checks privacy/notices/native-source metadata,
 typechecks, verifies Electron resolves, runs Vitest excluding `computer` and `mcp-shutdown`,
 then runs those suites with one worker. The real desktop foreground assertion must not compete
 with other suites' native windows or input; its assertions remain unchanged. `vitest.config.ts`

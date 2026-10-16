@@ -339,13 +339,14 @@ describe('terminal sessions at shutdown', () => {
     store.set(2, makeEntry('live', false));
     store.set(3, makeEntry('already-exited', true));
 
-    await expect(manager.terminateAllProcesses()).resolves.toBeUndefined();
+    await expect(manager.terminateAllProcesses()).rejects.toThrow('Process-tree retirement unresolved');
 
     // A rejection from the first entry used to abandon everything queued behind it, which at
     // shutdown means live shells and their console hosts outliving the app.
     expect(terminated).toContain('rejects');
     expect(terminated).toContain('live');
     expect(terminated).not.toContain('already-exited');
-    expect(store.size).toBe(0);
+    expect(store.size).toBe(1);
+    expect(store.get(1)).toMatchObject({ retirementPending: true });
   });
 });

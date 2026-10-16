@@ -83,7 +83,7 @@ function github(options: {
   const body = options.body ?? 'installer bytes';
   const sums = options.checksums ?? `${sha256(body)}  ${WINDOWS_ASSET}\n${sha256(body)}  ${APPIMAGE_ASSET}\n`;
   const asked: string[] = [];
-  const fetch = vi.fn(async (input: string | URL) => {
+  const fetch = vi.fn(async (input: string | URL, _init?: RequestInit) => {
     const url = String(input);
     const name = url.split('/').pop()!;
     asked.push(name);
@@ -592,20 +592,34 @@ describe('a check or download that goes wrong on a bad connection', () => {
     expect(online.asked).toHaveLength(calls);
   });
 
-  it('gives up on a download only when no data arrives for a minute, however long the whole file takes', async () => {
+  it('gives up on a download whose asset request sends no data for a minute', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const body = 'installer bytes';
-    // One chunk, then silence: the connection is still open but nothing comes.
-    const stalled = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(body.slice(0, 5))); } });
     const { fetch } = github({ body });
     const answer = fetch.getMockImplementation()!;
-    fetch.mockImplementation(async (input: string | URL) => String(input).endsWith(WINDOWS_ASSET) ? new Response(stalled, { status: 200 }) : answer(input));
+    let assetSignal: AbortSignal | null | undefined;
+    // Model fetch's signal rejection without coupling this timer test to Node's
+    // Web-to-Node stream cancellation schedule under fake timers.
+    fetch.mockImplementation((input: string | URL, init?: RequestInit) => String(input).endsWith(WINDOWS_ASSET)
+      ? new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          assetSignal = signal;
+          if (signal?.aborted) reject(signal.reason);
+          else signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }) : answer(input));
     let done = false;
     const pass = asPlatform('win32', undefined, () => checkForUpdates()).then(() => { done = true; });
-    await vi.waitFor(() => expect(updateStatus().stage).toBe('downloading'));
+    // vi.waitFor advances fake timers while polling; under load it can consume the
+    // simulated minute before the async staging directory and asset fetch are ready.
+    const stageDeadline = Date.now() + 10_000;
+    while (!assetSignal && Date.now() < stageDeadline)
+      await new Promise<void>(resolve => setImmediate(resolve));
+    expect(assetSignal).toBeTruthy();
+    expect(updateStatus().stage, updateStatus().error ?? undefined).toBe('downloading');
     await vi.advanceTimersByTimeAsync(59_000);
     expect(done).toBe(false);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.runAllTimersAsync();
+    expect(assetSignal?.aborted).toBe(true);
     await pass;
     expect(updateStatus()).toMatchObject({ stage: 'failed', latest: NEXT });
     expect(updateStatus().error).toContain('no data for 60 seconds');
