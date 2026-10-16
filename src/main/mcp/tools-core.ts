@@ -59,6 +59,7 @@ import { DEFAULT_TRUNCATION_POLICY, EXEC_OUTPUT_CEILING_POLICY, unifiedExecManag
 import {
   backgroundExecObligations,
   execOwnershipFailure,
+  execSessionRetired,
   executionPrincipal,
   forgetExecOwner,
   MAX_UNREAD_EXEC_RESULTS_PER_CONVERSATION,
@@ -958,6 +959,11 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               env: execChildEnvironment(),
               tty: input.tty ?? DEFAULT_TTY
             });
+            if (execSessionRetired(owner)) {
+              await unifiedExecManager.terminateProcess(processId);
+              unifiedExecManager.releaseProcessId(processId);
+              return fail('exec_command failed: the owning local session was deleted while this command started.');
+            }
             // Which exact session or temporary request principal may later write to this
             // process id. Request custody upgrades lazily when exact correlation arrives.
             noteExecOwner(output.processId ?? output.completedSessionId ?? null, owner);

@@ -49,6 +49,7 @@ import { agentPlanSchema, agentPlanUpdateSchema, MAX_AGENT_PLAN_BYTES, type Agen
 import { turnTrace, type TurnTrace } from '../../shared/turn-trace.js';
 import { getConfig } from '../config.js';
 import { logError, logInfo, logWarn } from '../logger.js';
+import { retireExecProcessesForSession } from '../codex/ownership.js';
 
 /**
  * Caps on how much of a value is written *inline*, into the JSONL line itself.
@@ -4244,6 +4245,7 @@ export async function pruneSessions(_retainDays: number): Promise<number> {
 
 export async function deleteSession(id: string): Promise<void> {
   assertSessionId(id);
+  await retireExecProcessesForSession(id);
   const entry = open.get(id);
   if (entry) {
     if (entry.metaTimer) clearTimeout(entry.metaTimer);

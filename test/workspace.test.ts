@@ -131,7 +131,7 @@ describe('live process ownership across chat replacement', () => {
     expect(execOwnershipFailure(101, null)).toBe('unidentified');
 
     expect(execOwner(102)).toBeNull();
-    expect(execOwnershipFailure(102, null)).toBeNull();
+    expect(execOwnershipFailure(102, null)).toBe('unidentified');
     expect(execOwnershipFailure(102, 'session-a-b')).toBe('anonymous');
     expect(execOwnershipFailure(999, 'session-a-b')).toBe('unavailable');
     expect(execOwner(103)).toBe('session-other');

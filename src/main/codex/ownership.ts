@@ -45,6 +45,8 @@ const NOTICES_PER_KIND = 3;
 
 /** Owners, keyed by the process id `exec_command` handed back as `session_id`. */
 const owners = new Map<number, string | null>();
+/** Deletion fences a late exec result from reacquiring custody after its session disappears. */
+const retiredSessions = new Set<string>();
 const REQUEST_PRINCIPAL_PREFIX = 'request:';
 
 /** When each owned session was last started or polled, keyed the same way. */
@@ -160,6 +162,7 @@ export function provenSession(requestId: string | null, sessionId: string | null
 /** Records custody for a returned running or completed process id. */
 export function noteExecOwner(processId: number | null, principal: string | null): void {
   if (processId === null) return;
+  if (execSessionRetired(principal)) return;
   owners.set(processId, canonicalPrincipal(principal));
   attendedAt.set(processId, Date.now());
   publishBackgroundExecChange();
@@ -193,6 +196,21 @@ export function forgetExecOwner(processId: number | null): void {
 /** The exact session or temporary request principal that opened this process. */
 export function execOwner(processId: number): string | null {
   return owners.get(processId) ?? null;
+}
+
+export function execSessionRetired(principal: string | null | undefined): boolean {
+  const sessionId = sessionOfPrincipal(principal);
+  return sessionId !== null && retiredSessions.has(sessionId);
+}
+
+/** Retire only process ids still owned by this exact durable session. */
+export async function retireExecProcessesForSession(sessionId: string): Promise<void> {
+  retiredSessions.add(sessionId);
+  for (const processId of processIdsOwnedBy(sessionId)) {
+    if (!samePrincipal(owners.get(processId), sessionId)) continue;
+    await unifiedExecManager.terminateProcess(processId);
+    if (samePrincipal(owners.get(processId), sessionId)) unifiedExecManager.releaseProcessId(processId);
+  }
 }
 
 /** One caller-scoped projection used by reminders, admission and runtime status. */
@@ -312,8 +330,9 @@ export function execOwnershipFailure(processId: number, principal: string | null
   'unavailable' | 'anonymous' | 'unidentified' | 'different-owner' | null {
   if (!owners.has(processId)) return 'unavailable';
   const owner = owners.get(processId);
+  if (owner === null) return principal === null ? 'unidentified' : 'anonymous';
+  if (execSessionRetired(owner) || execSessionRetired(principal)) return 'unavailable';
   if (samePrincipal(owner, principal)) return null;
-  if (owner === null) return principal === null ? null : 'anonymous';
   if (!principal) return 'unidentified';
   const ownerSession = sessionOfPrincipal(owner);
   const callerSession = sessionOfPrincipal(principal);
@@ -328,6 +347,7 @@ export function execOwnershipFailure(processId: number, principal: string | null
 /** Test seam: the registry is process-global state with no natural lifetime boundary. */
 export function resetExecOwnershipForTests(): void {
   owners.clear();
+  retiredSessions.clear();
   attendedAt.clear();
   noticeOffers.clear();
 }
