@@ -1081,6 +1081,9 @@ leaves `retirementPending` in the existing manager and rejects session deletion.
 output collection, explicit id release and shutdown cannot clear that unresolved tree. Shutdown
 attempts every sibling and reports failures through its existing bounded teardown. Custody is
 app-lifetime state; this is not durable process recovery or OS containment.
+Pipe Ctrl-C and explicit termination publish one shared in-flight retirement promise before
+native work starts. Initial exec (including early leader exit) joins it before publication;
+only successful retirement clears pending custody. Concurrent cleanup joins the same operation.
 Refusals distinguish unavailable ids, anonymous launch custody, missing caller proof and a
 different owning session. Only missing caller proof invites retry after identity recovery and
 participates in the existing recovered-identity notice. No refusal proves a command should be

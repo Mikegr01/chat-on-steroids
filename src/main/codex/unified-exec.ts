@@ -866,9 +866,6 @@ export class UnifiedExecProcessManager {
     if (!entry || this.processes.get(request.processId) !== entry) throw UnifiedExecError.unknownProcessId(request.processId);
     const start = Date.now();
     const wallStart = performance.now();
-    // Stored before the yield wait, so interrupting the call cannot drop the session.
-    const processStartedAlive = !process.hasExited() && process.exitCode() === null;
-
     const deadline = start + clampYieldTime(request.yieldTimeMs);
     const collected = await collectOutputUntilDeadline(process, deadline);
     const wallTimeMs = Math.max(0, performance.now() - wallStart);
@@ -888,24 +885,19 @@ export class UnifiedExecProcessManager {
 
     let responseProcessId: number | null;
     let exitCode: number | null;
-    if (processStartedAlive) {
-      await entry.retirement;
-      if (this.processes.get(request.processId) !== entry) throw UnifiedExecError.unknownProcessId(request.processId);
-      const status = this.refreshProcessState(request.processId);
-      if (status.kind === 'alive') {
-        responseProcessId = status.processId;
-        exitCode = status.exitCode;
-      } else if (status.kind === 'exited') {
-        responseProcessId = null;
-        exitCode = status.exitCode;
-      } else {
-        throw UnifiedExecError.unknownProcessId(request.processId);
-      }
-    } else {
-      if (this.processes.get(request.processId) !== entry) throw UnifiedExecError.unknownProcessId(request.processId);
-      this.retainCompleted(entry);
+    // Early leader exit does not prove tree retirement either. Join the shared
+    // operation before refreshing or publishing any initial result.
+    if (entry.retirement) await entry.retirement;
+    if (this.processes.get(request.processId) !== entry) throw UnifiedExecError.unknownProcessId(request.processId);
+    const status = this.refreshProcessState(request.processId);
+    if (status.kind === 'alive') {
+      responseProcessId = status.processId;
+      exitCode = status.exitCode;
+    } else if (status.kind === 'exited') {
       responseProcessId = null;
-      exitCode = process.exitCode();
+      exitCode = status.exitCode;
+    } else {
+      throw UnifiedExecError.unknownProcessId(request.processId);
     }
 
     const response = {
@@ -968,9 +960,11 @@ export class UnifiedExecProcessManager {
         if (process.hasExited()) throw UnifiedExecError.processFailed('Process already completed; no input was sent. Use empty chars to read its retained output.');
         if (!tty) {
           if (request.input === INTERRUPT) {
-            if (globalThis.process.platform === 'win32') current.retirementPending = true;
-            await process.interrupt();
-            delete current.retirementPending;
+            if (globalThis.process.platform === 'win32') {
+              await this.retireProcess(current, () => process.interrupt());
+            } else {
+              await process.interrupt();
+            }
           } else {
             throw UnifiedExecError.stdinClosed();
           }
@@ -984,7 +978,7 @@ export class UnifiedExecProcessManager {
             if (status.kind === 'exited') {
               statusAfterWrite = status;
             } else if (error instanceof UnifiedExecError && error.kind === 'process_failed') {
-              await process.terminate();
+              await this.retireProcess(current, () => process.terminate());
               this.releaseProcessId(request.processId);
               throw error;
             } else {
@@ -1030,7 +1024,7 @@ export class UnifiedExecProcessManager {
         throw UnifiedExecError.processFailed(failure);
       }
 
-      await current.retirement;
+      if (current.retirement) await current.retirement;
       const status = statusAfterWrite ?? this.refreshProcessState(request.processId);
       let responseProcessId: number | null;
       let exitCode: number | null;
@@ -1164,6 +1158,21 @@ export class UnifiedExecProcessManager {
     return null;
   }
 
+  /** Publish one shared operation before native retirement can wake any observer. */
+  private retireProcess(entry: ProcessEntry, retire: () => Promise<void>): Promise<void> {
+    if (!entry.retirement) {
+      entry.retirementPending = true;
+      entry.retirement = Promise.resolve().then(retire).then(() => {
+        delete entry.retirementPending;
+      }).finally(() => {
+        // Failure retains pending custody, but permits an explicit later cleanup retry.
+        delete entry.retirement;
+        this.notifyProcessChange();
+      });
+    }
+    return entry.retirement;
+  }
+
   async terminateProcess(processId: number, expectedIncarnation?: number): Promise<boolean> {
     const entry = this.processes.get(processId);
     if (!entry) return false;
@@ -1174,15 +1183,7 @@ export class UnifiedExecProcessManager {
     if (!entry.process.hasExited() || entry.retirementPending) {
       // Claim before awaiting the OS helper. A partial kill can emit leader exit while
       // this call is suspended; neither polling nor cleanup may mistake that for proof.
-      entry.retirementPending = true;
-      entry.retirement ??= entry.process.terminate();
-      try {
-        await entry.retirement;
-        delete entry.retirementPending;
-      } finally {
-        delete entry.retirement;
-        this.notifyProcessChange();
-      }
+      await this.retireProcess(entry, () => entry.process.terminate());
     }
     const current = this.processes.get(processId);
     if (current && current.process === entry.process) {
