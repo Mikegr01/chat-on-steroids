@@ -1427,7 +1427,12 @@ describe('the window in which a replacement chat is expected', () => {
     const create = vi.spyOn(store, 'createSession');
     const gate = vi.spyOn(await import('../src/main/session/resume-gate.js'), 'resumeOpeningChat');
     const observation = sessionForConversation(destination);
-    await vi.waitFor(() => expect(gate.mock.calls.length).toBeGreaterThanOrEqual(2));
+    // vi.waitFor advances the fake clock while polling and can expire the gate
+    // before the recorder reaches it on a busy runner.
+    const observedBy = process.hrtime.bigint() + 10_000_000_000n;
+    while (gate.mock.calls.length < 2 && process.hrtime.bigint() < observedBy)
+      await new Promise<void>(resolve => setImmediate(resolve));
+    expect(gate.mock.calls.length).toBeGreaterThanOrEqual(2);
     await vi.advanceTimersByTimeAsync(6_000);
 
     // The command still owns its sixty-second claim. Five seconds without its ACK
@@ -1453,7 +1458,12 @@ describe('the window in which a replacement chat is expected', () => {
     expect(resumeOpeningChat()).toBe(true);
 
     const create = vi.spyOn(store, 'createSession');
+    const gate = vi.spyOn(await import('../src/main/session/resume-gate.js'), 'resumeOpeningChat');
     const observation = sessionForConversation(destination);
+    const observedBy = process.hrtime.bigint() + 10_000_000_000n;
+    while (gate.mock.calls.length < 1 && process.hrtime.bigint() < observedBy)
+      await new Promise<void>(resolve => setImmediate(resolve));
+    expect(gate.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(await commitContinuation(token, destination)).toBe(true);
     await vi.advanceTimersByTimeAsync(50);
     expect(await observation).toBe(sessionId);

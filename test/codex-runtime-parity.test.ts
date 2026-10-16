@@ -254,11 +254,11 @@ describe('Codex unified exec runtime parity', () => {
     const instance = manager();
     managers.push(instance);
     const processId = instance.allocateProcessId();
-    const output = await instance.execCommand({
+    let output = await instance.execCommand({
       command: [
         process.execPath,
         '-e',
-        "process.stdout.write('stdout-marker\\n'); process.stderr.write('stderr-marker\\n'); process.exit(17)"
+        "setTimeout(() => { process.stdout.write('stdout-marker\\n'); process.stderr.write('stderr-marker\\n'); process.exit(17); }, 600)"
       ],
       shellType: process.platform === 'win32' ? 'powershell' : 'bash',
       hookCommand: 'pipe exit-code parity child',
@@ -272,10 +272,20 @@ describe('Codex unified exec runtime parity', () => {
       tty: false
     });
 
+    const chunks = [output.rawOutput];
+    const deadline = Date.now() + 10_000;
+    while (output.processId !== null && Date.now() < deadline) {
+      expect(output.processId).toBe(processId);
+      output = await instance.writeStdin({ processId, input: '', yieldTimeMs: 5_000,
+        maxOutputTokens: undefined, truncationPolicy });
+      chunks.push(output.rawOutput);
+    }
     expect(output.processId).toBeNull();
     expect(output.exitCode).toBe(17);
-    expect(output.rawOutput.toString('utf8')).toContain('stdout-marker');
-    expect(output.rawOutput.toString('utf8')).toContain('stderr-marker');
+    const combined = Buffer.concat(chunks).toString('utf8');
+    expect(combined).toContain('stdout-marker');
+    expect(combined).toContain('stderr-marker');
+    expect(instance.listProcesses()).toEqual([]);
   });
 
   it('publishes a process change when a yielded child exits on its own', async () => {

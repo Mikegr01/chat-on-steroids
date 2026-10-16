@@ -126,7 +126,9 @@ app.whenReady().then(async () => {
     // insertText and sendInputEvent take different input paths, so Return could reach the shell
     // first: an empty Enter, then the command typed but never sent (macOS CI, 2026-10-03). Send
     // Return only once the shell has echoed the text.
-    await until(`(outputs[${JSON.stringify(first)}]||'').replace(/\\x1b\\[[0-9;?]*[ -\\/]*[@-~]/g,'').includes('persisted')`);
+    // The assignment appears near the start of the command. Wait for its final
+    // expression before pressing Return, otherwise ConPTY can receive it mid-paste.
+    await until(`(outputs[${JSON.stringify(first)}]||'').replace(/\\x1b\\[[0-9;?]*[ -\\/]*[@-~]/g,'').replace(/\\s+/g,'').includes(${JSON.stringify(WINDOWS ? 'Split-Path(Get-Location)-Leaf))' : 'basename"$PWD")"')})`);
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
     await until(`outputs[${JSON.stringify(first)}]?.includes('PROOF_persisted_child')`);
     assert.ok(await js(`(()=>{const tab=document.querySelector('#workspaceTerminal .terminal-tab').getBoundingClientRect();const plus=document.querySelector('#workspaceTerminal .work-dock-add summary').getBoundingClientRect();return plus.left-tab.right<=12&&plus.left>=tab.right})()`));
