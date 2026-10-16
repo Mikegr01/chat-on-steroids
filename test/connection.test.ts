@@ -448,9 +448,10 @@ describe('connection surface state', () => {
    * refreshing the connectors and opening fresh chats all left it in place — so three people
    * reached it the long way before anyone suspected the configuration.
    *
-   * A warning and not a refusal: the IDs are the user's to choose. And no ID is ever logged.
+   * Keep Core usable and refuse the duplicate optional client before OpenAI can round-robin it.
+   * The diagnostic still names the affected surfaces, but never the tunnel ID itself.
    */
-  it('warns when two connectors share one Secure Tunnel ID, and names both', async () => {
+  it('warns and refuses an optional connector that shares Core Secure Tunnel ID', async () => {
     mocks.config.tunnel.kind = 'openai';
     Object.assign(mocks.config.tunnel, { tunnelId: 'shared-id', pluginsTunnelId: 'shared-id', desktopTunnelId: '' });
     const connection = await import('../src/main/connection.js');
@@ -463,6 +464,16 @@ describe('connection surface state', () => {
       expect(said[0]).toContain('core and plugins');
       expect(said[0]).toContain('UNKNOWN_TOOL');
       expect(said[0], 'the tunnel ID itself was logged').not.toContain('shared-id');
+      expect(mocks.starts, 'the duplicate Plugins tunnel was still started').toBe(1);
+      expect(connection.getStatus().surfaces.find((surface) => surface.id === 'core')).toMatchObject({
+        state: 'live',
+        detail: 'Connected.'
+      });
+      expect(connection.getStatus().surfaces.find((surface) => surface.id === 'plugins')).toMatchObject({
+        state: 'error',
+        publicUrl: null,
+        detail: expect.stringContaining('Core connector')
+      });
     } finally {
       await connection.disconnect();
       Object.assign(mocks.config.tunnel, { tunnelId: '', pluginsTunnelId: '', desktopTunnelId: '' });
@@ -470,8 +481,9 @@ describe('connection surface state', () => {
   });
 
   /** The control: distinct IDs are the ordinary case and must stay silent. */
-  it('says nothing when each connector has its own tunnel ID', async () => {
+  it('says nothing and accepts all available connectors when each has its own tunnel ID', async () => {
     mocks.config.tunnel.kind = 'openai';
+    mocks.caps.screen = true;
     Object.assign(mocks.config.tunnel, { tunnelId: 'core-id', pluginsTunnelId: 'plugins-id', desktopTunnelId: 'desktop-id' });
     const connection = await import('../src/main/connection.js');
     const { logWarn } = await import('../src/main/logger.js');
@@ -480,6 +492,52 @@ describe('connection surface state', () => {
       expect((logWarn as unknown as { mock: { calls: string[][] } }).mock.calls
         .map(call => String(call[0])).filter(line => line.includes('same Secure Tunnel ID')),
         'distinct IDs were reported as shared').toEqual([]);
+      expect(mocks.starts).toBe(3);
+      expect(connection.getStatus().surfaces.filter(surface => surface.state === 'live').map(surface => surface.id))
+        .toEqual(['core', 'desktop', 'plugins']);
+    } finally {
+      await connection.disconnect();
+      Object.assign(mocks.config.tunnel, { tunnelId: '', pluginsTunnelId: '', desktopTunnelId: '' });
+    }
+  });
+
+  it('lets only one optional connector win when Desktop and Plugins claim the same ID together', async () => {
+    mocks.config.tunnel.kind = 'openai';
+    mocks.caps.screen = true;
+    Object.assign(mocks.config.tunnel, { tunnelId: 'core-id', desktopTunnelId: 'optional-shared', pluginsTunnelId: 'optional-shared' });
+    const connection = await import('../src/main/connection.js');
+    try {
+      await connection.connect();
+      expect(mocks.starts, 'both optional claimants acquired the same tunnel ID').toBe(2);
+      expect(connection.getStatus().surfaces.find(surface => surface.id === 'desktop')).toMatchObject({ state: 'live' });
+      expect(connection.getStatus().surfaces.find(surface => surface.id === 'plugins')).toMatchObject({
+        state: 'error',
+        publicUrl: null,
+        detail: expect.stringContaining('Desktop connector')
+      });
+    } finally {
+      await connection.disconnect();
+      Object.assign(mocks.config.tunnel, { tunnelId: '', pluginsTunnelId: '', desktopTunnelId: '' });
+    }
+  });
+
+  it('releases an optional tunnel ID so the same connector can reuse it later', async () => {
+    mocks.config.tunnel.kind = 'openai';
+    Object.assign(mocks.config.tunnel, { tunnelId: 'core-id', pluginsTunnelId: 'reusable-id', desktopTunnelId: '' });
+    const connection = await import('../src/main/connection.js');
+    try {
+      await connection.connect();
+      expect(mocks.starts).toBe(2);
+      mocks.config.tunnel.pluginsTunnelId = 'replacement-id';
+      await connection.applySettings();
+      expect(mocks.starts).toBe(3);
+      mocks.config.tunnel.pluginsTunnelId = 'reusable-id';
+      await connection.applySettings();
+      expect(mocks.starts).toBe(4);
+      expect(connection.getStatus().surfaces.find(surface => surface.id === 'plugins')).toMatchObject({
+        state: 'live',
+        detail: 'Connected.'
+      });
     } finally {
       await connection.disconnect();
       Object.assign(mocks.config.tunnel, { tunnelId: '', pluginsTunnelId: '', desktopTunnelId: '' });
