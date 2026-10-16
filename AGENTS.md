@@ -1067,6 +1067,14 @@ awaits correlation. Only that request can initially continue its process. Exact 
 the request principal equivalent to its durable session, so A→B compaction lets B continue
 A's live terminal and receive its retained output without rerunning a command.
 Another session/worker cannot poll or write it. Anonymous process custody is non-adoptable.
+Core binds that custody through a synchronous manager admission callback immediately before
+native launch. `ownership.ts` canonicalizes the exact principal and refuses a retired session;
+the manager registers the launched handle before its first output/early-exit wait and only then
+notifies observers. After asynchronous PTY preparation it rechecks the exact reservation
+incarnation. Thus deletion either finds the already-owned process or retirement refuses launch.
+Failed setup releases only its own reservation/custody; delayed initial responses cannot bind
+an owner or act on a recycled id. Late exact request proof for a retired session grants cleanup
+custody only, triggers retirement and never restores execution access.
 Windows retirement requires successful tree termination before dropping the manager row or
 custody. Missing/refused/timed-out taskkill, including a missing leader after partial termination,
 leaves `retirementPending` in the existing manager and rejects session deletion. Leader exit,

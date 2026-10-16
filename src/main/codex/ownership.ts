@@ -19,6 +19,7 @@ import { unifiedExecManager } from './manager.js';
 import type { BackgroundExecState, OutputPublication } from './unified-exec.js';
 import { truncateText } from './truncate.js';
 import type { RunningExecProcess } from '../../shared/background-exec.js';
+import { logWarn } from '../logger.js';
 
 /** Prevent one caller from indefinitely postponing already-completed command results. */
 export const MAX_UNREAD_EXEC_RESULTS_PER_CONVERSATION = 4;
@@ -116,6 +117,13 @@ function reconcileExecRequestOwner(owner: RequestCorrelation): void {
     changed = true;
   }
   if (changed) publishBackgroundExecChange();
+  if (changed && retiredSessions.has(owner.sessionId)) {
+    // Exact late proof establishes cleanup custody, never permission to resurrect
+    // the deleted session. Failure keeps this same owner and manager row for retry.
+    void retireExecProcessesForSession(owner.sessionId).catch(() => {
+      logWarn('Exec request proof belongs to a retired session; process-tree retirement remains unresolved');
+    });
+  }
 }
 
 /**
@@ -159,12 +167,19 @@ export function provenSession(requestId: string | null, sessionId: string | null
   return requestCorrelation(requestId)?.sessionId ?? null;
 }
 
-/** Records custody for a returned running or completed process id. */
+/** Synchronous launch admission. Publish observers only after the manager has its handle. */
+export function admitExecOwner(processId: number, principal: string | null): void {
+  const owner = canonicalPrincipal(principal);
+  if (execSessionRetired(owner)) throw new Error('EXEC_SESSION_RETIRED: the owning local session was deleted before process admission');
+  owners.set(processId, owner);
+  attendedAt.set(processId, Date.now());
+}
+
+/** Existing reconciliation seam; production launch custody is established at admission. */
 export function noteExecOwner(processId: number | null, principal: string | null): void {
   if (processId === null) return;
   if (execSessionRetired(principal)) return;
-  owners.set(processId, canonicalPrincipal(principal));
-  attendedAt.set(processId, Date.now());
+  admitExecOwner(processId, principal);
   publishBackgroundExecChange();
 }
 
