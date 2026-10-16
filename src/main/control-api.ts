@@ -22,6 +22,7 @@ import { inFlightMcpRequests, inFlightToolCalls, runningToolCalls, settlingToolC
 import { pluginManager } from './plugins/manager.js';
 import { updateStatus } from './update.js';
 import { APP_VERSION } from './version.js';
+import { workflowAdapterInfoFromSnapshot, type WorkflowAdapterInfo } from './video-editing/runtime-inspection.js';
 import { closeEventStreams, eventStreamSession, serveEventStream } from './control-stream.js';
 
 /**
@@ -484,6 +485,18 @@ export interface StatusSources {
   toolCalls: ControlApiStatus['toolCalls'];
 }
 
+/** Bounded, non-authority projection of the adapter metadata used by protected confirmation. */
+export function projectWorkflowAdapterDiagnostic(adapter: WorkflowAdapterInfo): ControlApiStatus['workflowAdapter'] {
+  if (!adapter.ready)
+    return { provider: null, ready: false, version: null, epoch: null, sourceEnd: 'unknown', guardVersion: null };
+  const version = adapter.adapterVersion && adapter.adapterVersion !== '0.0.0' ? adapter.adapterVersion : null;
+  const epoch = adapter.epoch && adapter.epoch !== 'unknown' ? adapter.epoch : null;
+  const sourceEnd = adapter.sourceEnd === 'inclusive' || adapter.sourceEnd === 'exclusive' ? adapter.sourceEnd : 'unknown';
+  const guardVersion = Number.isInteger(adapter.guardVersion) && adapter.guardVersion > 0 ? adapter.guardVersion : null;
+  return { provider: 'davinci-resolve', ready: Boolean(version && epoch && sourceEnd !== 'unknown' && guardVersion !== null),
+    version, epoch, sourceEnd, guardVersion };
+}
+
 /** An allowlist projection: a field is published only by being named here. */
 export function projectStatus(sources: StatusSources): ControlApiStatus {
   const { connection, bridge, plugins, update } = sources;
@@ -526,6 +539,7 @@ export function projectStatus(sources: StatusSources): ControlApiStatus {
       extensionVersion: bridge.extensionVersion,
       error: text(bridge.error)
     },
+    workflowAdapter: projectWorkflowAdapterDiagnostic(workflowAdapterInfoFromSnapshot(plugins)),
     plugins: plugins.plugins.map((plugin) => ({
       id: plugin.id,
       name: plugin.name,

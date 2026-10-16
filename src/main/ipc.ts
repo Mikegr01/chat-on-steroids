@@ -1,4 +1,8 @@
 import { registerWorkspaceTerminalIpc } from './workspace-terminal-ipc.js';
+import { registerVideoOperatorIpc } from './video-editing/operator-ipc.js';
+import { mediaRuntimeOperator } from './video-editing/media-runtime-operator.js';
+import { authorizeVideoJob, inspectVideoJob, confirmCapabilityAdmissionJob, executeNativeVideoJob } from './video-editing/service.js';
+import { authenticateWindowsOperator } from './video-editing/operator-verification.js';
 import { registerDictationIpc } from './dictation.js';
 import { CONNECTOR_SUFFIX_MAX, CONNECTOR_SUFFIX_PATTERN } from '../shared/connector-names.js';
 import { setStopNoticeTranslations } from './stuck-notice.js';
@@ -48,7 +52,7 @@ import { confirmedPluginSchemas, pluginRefreshPublications, pluginRefreshUnreada
  * key but can never read it back.
  */
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import {
   CAPABILITIES,
@@ -557,10 +561,10 @@ async function buildState(): Promise<AppState> {
 }
 
 /** Wraps a handler so a thrown error becomes a message the UI can show. */
-function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void {
-  ipcMain.handle(channel, async (_event, payload: unknown) => {
+function handle<T>(channel: string, fn: (payload: unknown, event: IpcMainInvokeEvent) => Promise<T>): void {
+  ipcMain.handle(channel, async (event, payload: unknown) => {
     try {
-      return { ok: true as const, data: await fn(payload) };
+      return { ok: true as const, data: await fn(payload, event) };
     } catch (err) {
       const message =
         err instanceof SandboxError || err instanceof z.ZodError
@@ -589,6 +593,23 @@ export async function openSessionChat(id: string): Promise<void> {
 
 export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall: () => void): void {
   registerWorkspaceTerminalIpc(getWindow);
+  registerVideoOperatorIpc(handle, getWindow, {
+    lifecycle: app,
+    admit: mediaRuntimeOperator.admit,
+    diagnostics: mediaRuntimeOperator.status,
+    pick: async tool => {
+      const window = getWindow();
+      if (!window) throw new Error('Main window unavailable');
+      const result = await dialog.showOpenDialog(window, { title: `Choose ${tool} executable`, properties: ['openFile'],
+        ...(process.platform === 'win32' ? { filters: [{ name: 'Executable', extensions: ['exe'] }] } : {}) });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    },
+    inspect: inspectVideoJob, authorize: authorizeVideoJob,
+    confirmCapabilityAdmission: confirmCapabilityAdmissionJob, execute: executeNativeVideoJob,
+    authenticateCapability: authenticateWindowsOperator,
+    confirm: async detail => (await dialog.showMessageBox({ type: 'question', title: 'S7.5 operator control', message: detail,
+      buttons: ['Confirm', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })).response === 0,
+  });
   registerDictationIpc(getWindow);
   // A session row remains visible until its delete IPC resolves. Fence Trust while deletion is
   // in flight so a second click cannot recreate permission after the row's durable revoke.

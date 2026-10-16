@@ -869,6 +869,42 @@
                 <label class="inline"><input type="checkbox" id="autoConnect" /> Connect automatically at startup</label>
                 <label class="inline"><input type="checkbox" id="minimizeToTray" /> <span id="minimizeToTrayCopy">Keep running when closed</span></label>
               </div>
+
+              <div class="field" id="videoMediaRuntimeControl" translate="no">
+                <h3>S7.5 — Media Runtime</h3>
+                <p class="hint">Choose external ffprobe and ffmpeg executables using absolute paths. Admission requires native confirmation. No download or installation.</p>
+                <p id="videoMediaState" role="status">NOT_CONFIGURED</p>
+                <label for="videoMediaFfprobePath">FFPROBE — candidate path</label>
+                <div class="row-inline"><input id="videoMediaFfprobePath" type="text" maxlength="4096" placeholder="Absolute ffprobe path" /><button class="btn" id="videoMediaFfprobeChoose" type="button">Choose ffprobe</button></div>
+                <label for="videoMediaFfmpegPath">FFMPEG — candidate path</label>
+                <div class="row-inline"><input id="videoMediaFfmpegPath" type="text" maxlength="4096" placeholder="Absolute ffmpeg path" /><button class="btn" id="videoMediaFfmpegChoose" type="button">Choose ffmpeg</button></div>
+                <div class="row-inline"><button class="btn" id="videoMediaAdmit" type="button">Admit / Validate</button><button class="btn" id="videoMediaRefresh" type="button">Refresh diagnostics</button></div>
+                <pre id="videoMediaDiagnostics" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+                <p class="hint" id="videoMediaError" role="alert" hidden></p>
+              </div>
+              <div class="field" id="videoOperatorControls" translate="no">
+                <h3>S7.5 — Operator Controls</h3>
+                <p class="hint">Request native review of the inspected job. Execution authorization does not execute Resolve.</p>
+                <label for="videoOperatorJobId">Job ID</label>
+                <div class="row-inline">
+                  <input id="videoOperatorJobId" type="text" maxlength="128" autocomplete="off" />
+                  <button class="btn" id="videoOperatorInspect" type="button" disabled>Inspect job</button>
+                </div>
+                <pre id="videoOperatorState" style="white-space:pre-wrap;overflow-wrap:anywhere">Inspect a job to review its current state.</pre>
+                <div class="row-inline" style="flex-wrap:wrap">
+                  <button class="btn" id="videoOperatorCapabilityConfirm" type="button" disabled>Review capability confirmation</button>
+                  <button class="btn" id="videoOperatorAuthorize" type="button" disabled>Review execution authorization</button>
+                  <button class="btn" id="videoOperatorExecute" type="button" disabled hidden>Execute reviewed acceptance</button>
+                </div>
+                <p class="hint" id="videoOperatorStatus" role="status"></p>
+                <p class="hint" id="videoOperatorError" role="alert" hidden></p>
+              </div>
+              <div class="field" id="ucvValidationControls" translate="no">
+                <h3>S7.5 — Windows Verification Validation</h3>
+                <p class="hint">Requests Windows Hello once. Checks verification without confirming a video job or granting execution authority. Complete verification personally in Windows Hello.</p>
+                <button class="btn" id="ucvValidationRun" type="button">Validate Windows verification</button>
+                <pre id="ucvValidationResult" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+              </div>
             </details>
           </div>
         </section>

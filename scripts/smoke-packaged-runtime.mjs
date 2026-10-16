@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { RIPGREP, TUNNEL_CLIENT } from './packaging-versions.mjs';
 import { normalizeArch, normalizePlatform, PLATFORM_INFO } from './packaging-targets.mjs';
+import { inspectPackagedWindowsUcv, probeWindowsUcv } from './windows-ucv-package-smoke.mjs';
 
 const repository = path.resolve(import.meta.dirname, '..');
 const releaseDir = path.join(repository, 'release');
@@ -105,6 +107,7 @@ for (const relative of [
 ]) required(relative);
 
 if (targetPlatform === 'win32') {
+  inspectPackagedWindowsUcv(resourcesDir, targetArch);
   required(`THIRD-PARTY-NOTICES-sharp-win32-${targetArch}.md`);
   required(`app.asar.unpacked/node_modules/@img/sharp-win32-${targetArch}/LICENSE`);
   required(`app.asar.unpacked/node_modules/node-pty/prebuilds/${nativeDir}/conpty.node`);
@@ -186,7 +189,7 @@ if (process.platform !== targetPlatform || process.arch !== targetArch) {
 runExecutable(path.join(resourcesDir, 'rg', `rg${suffix}`), ['--version'], RIPGREP.version);
 runExecutable(path.join(resourcesDir, 'tunnel', `tunnel-client${suffix}`), ['--version'], TUNNEL_CLIENT.version.replace(/^v/, ''));
 runExecutable(path.join(resourcesDir, 'tunnel', `cloudflared${suffix}`), ['--version']);
-const probe = String.raw`
+const probe = `const probeWindowsUcv = ${probeWindowsUcv.toString()};\n` + String.raw`
 (async () => {
   const base = process.env.COS_RESOURCES_DIR;
   const sharp = require(base + '/app.asar/node_modules/sharp');
@@ -201,8 +204,10 @@ const probe = String.raw`
   // package inside the packaging gate rather than discovering it after installation.
   const appRequire = require('node:module').createRequire(base + '/app.asar/package.json');
   let petFocus = null;
+  let ucv = null;
   if (process.platform === 'win32') {
     const koffi = appRequire('koffi');
+    ucv = await probeWindowsUcv(koffi, base, process.arch);
     const user32 = koffi.load('user32.dll');
     petFocus = typeof user32.func('uintptr_t __stdcall GetForegroundWindow()')() === 'number';
   }
@@ -232,13 +237,16 @@ const probe = String.raw`
     terminal.onData((data) => { output += data; });
     terminal.onExit(({ exitCode }) => { clearTimeout(timer); exitCode === 0 ? resolve() : reject(new Error('node-pty child exited ' + exitCode)); });
   });
-  process.stdout.write(JSON.stringify({ version: manifest.version, electron: process.versions.electron, mcp: true, sharp: sharp.versions.sharp, vips: sharp.versions.vips, png: png.length, pty: output.includes('packaged-pty'), tree: tree.rootNode.type, desktop, petFocus }) + '\n');
+  process.stdout.write(JSON.stringify({ version: manifest.version, electron: process.versions.electron, mcp: true, sharp: sharp.versions.sharp, vips: sharp.versions.vips, png: png.length, pty: output.includes('packaged-pty'), tree: tree.rootNode.type, desktop, petFocus, ucv }) + '\n');
   process.exit(0);
 })().catch((error) => process.stderr.write(String(error?.stack || error) + '\n', () => process.exit(1)));`;
 
+const isolatedRoot = mkdtempSync(path.join(os.tmpdir(), 'cos-packaged-runtime-'));
+const probeEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', COS_RESOURCES_DIR: resourcesDir };
+delete probeEnv.NODE_OPTIONS;
 const result = spawnSync(appExecutable, ['-e', probe], {
-  cwd: packageRoot,
-  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', COS_RESOURCES_DIR: resourcesDir },
+  cwd: isolatedRoot,
+  env: probeEnv,
   encoding: 'utf8',
   timeout: 30_000
 });
@@ -247,6 +255,10 @@ if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 if (result.status !== 0) process.exit(result.status ?? 1);
 const runtime = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+if (targetPlatform === 'win32' && (runtime.ucv?.loaded !== true || runtime.ucv.liveVerificationRuns !== 0 ||
+    runtime.ucv.loadedFrom !== path.join(resourcesDir, 'windows-ucv', targetArch, 'cos-windows-ucv.dll')))
+  throw new Error('Packaged native Windows UCV load proof missing');
+process.stdout.write(`Packaged probe isolated directory: ${isolatedRoot}; production bootstrap/userData not loaded.\n`);
 if (runtime.version !== expectedVersion || runtime.electron !== expectedElectronVersion || runtime.mcp !== true || !runtime.sharp || !runtime.vips || runtime.png <= 0 || !runtime.pty || runtime.tree !== 'program' || (targetPlatform === 'darwin' && runtime.desktop !== true) || (targetPlatform === 'win32' && runtime.petFocus !== true)) {
   throw new Error(`Packaged native runtime probe failed: ${JSON.stringify(runtime)}`);
 }

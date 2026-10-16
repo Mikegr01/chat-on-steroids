@@ -74,6 +74,55 @@ export async function readDurable<T>(name: string, options: { strict?: boolean }
   }
 }
 
+export type StrictDurableRead = { kind: 'valid'; value: unknown } |
+  { kind: 'absent' | 'malformed' | 'unreadable' | 'unavailable' };
+
+/** Bounded custody reader. Generic auxiliary-state readers keep their existing semantics. */
+export async function readStrictDurable(name: string, maxBytes: number): Promise<StrictDurableRead> {
+  if (!root) return { kind: 'unavailable' };
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(fileFor(name), 'r');
+    const size = (await handle.stat()).size;
+    if (size > maxBytes) return { kind: 'malformed' };
+    const bytes = Buffer.alloc(maxBytes + 1);
+    let count = 0;
+    while (count < bytes.length) {
+      const result = await handle.read(bytes, count, bytes.length - count, count);
+      if (!result.bytesRead) break;
+      count += result.bytesRead;
+    }
+    if (count > maxBytes) return { kind: 'malformed' };
+    try { return { kind: 'valid', value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, count))) }; }
+    catch { return { kind: 'malformed' }; }
+  } catch (error) {
+    return { kind: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'unreadable' };
+  } finally { await handle?.close().catch(() => undefined); }
+}
+
+/** Strict transactions have no pending-generation retry: a rejected generation cannot reappear. */
+export function writeStrictDurableNow(name: string, value: unknown, maxBytes: number, assertOwner?: () => Promise<void>): Promise<void> {
+  if (!root) return Promise.reject(new Error('Strict durability root unavailable'));
+  const capturedRoot = root, target = fileFor(name), bytes = JSON.stringify(value);
+  if (Buffer.byteLength(bytes) > maxBytes) return Promise.reject(new Error('Strict durable state exceeds bound'));
+  return enqueue(name, async () => {
+    if (root !== capturedRoot) throw new Error('Strict durability root changed');
+    const tmp = `${target}.strict.tmp`;
+    try {
+      await fs.mkdir(capturedRoot, { recursive: true });
+      await fs.writeFile(tmp, bytes, 'utf8');
+      if (root !== capturedRoot) throw new Error('Strict durability root changed');
+      // Authority can retire while bytes are staged or waiting behind another file write.
+      // This is the last check before atomic publication, never a post-commit rollback.
+      await assertOwner?.();
+      await fs.rename(tmp, target);
+    } catch (error) {
+      await fs.unlink(tmp).catch(() => undefined);
+      throw error;
+    }
+  });
+}
+
 function nextWrite(value: unknown): PendingWrite {
   return { generation: nextGeneration++, value };
 }

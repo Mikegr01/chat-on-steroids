@@ -150,7 +150,10 @@ describe('cross-platform packaging targets', () => {
     expect(config.nsis.include).toBe('scripts/windows-installer-acl.nsh');
     expect(installer).toContain('!macro customInit');
     expect(installer).toContain('!macro customInstall');
-    expect(installer).toContain('${FileExists} "$INSTDIR\\${APP_EXECUTABLE_FILENAME}"');
+    const init = installer.split('!macro customInit')[1]?.split('!macroend')[0] ?? '';
+    expect(init).not.toMatch(/ExecWait|grantSandboxReadAccess|FileExists/);
+    expect(installer).toContain('$installMode == "all"');
+    expect(installer).toContain('${IfNot} ${UAC_IsAdmin}');
     expect(installer).toContain('ExecWait');
     expect(installer).toContain('"$SYSDIR\\icacls.exe" "$INSTDIR" /grant "*S-1-15-2-2:(OI)(CI)(RX)"');
     expect(installer).toContain('${If} ${Errors}');

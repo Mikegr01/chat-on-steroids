@@ -14,6 +14,9 @@ import { initPlugins, applyPluginsState } from './plugins.js';
 import { initBrowserPreferences } from './browser-preferences.js';
 import { initSetupGuide } from './setup-guide.js';
 import { initAppearance } from './appearance.js';
+import { initVideoMediaRuntime } from './video-media-runtime.js';
+import { initVideoOperatorControls } from './video-operator-controls.js';
+import { initUcvValidationControls } from './ucv-validation.js';
 import { initKeychainNotice } from './keychain-notice.js';
 import { initPet } from './pet.js';
 import { initPets } from './pets.js';
@@ -114,6 +117,9 @@ const browserSetup = initBrowserSetup({
 // Escape the translucent sidebar's backdrop-filter containing block.
 document.body.append($('connectionPopover'));
 const appearance = initAppearance(patch => { void save(patch); });
+const videoMediaRuntime = initVideoMediaRuntime(api);
+initVideoOperatorControls(api);
+initUcvValidationControls(api);
 
 /** Same shape the platform uses; mirrored here only to grey out the tunnel step until it is valid. */
 const TUNNEL_ID_PATTERN = /^tunnel_[0-9a-f]{32}$/;
@@ -221,6 +227,7 @@ function placePermissions(tab: string): void {
 }
 
 function showTab(name: string): void {
+  if (name === 'setup') void videoMediaRuntime.refresh();
   if (name === 'skills') openSkillsLibrary();
   placePermissions(name);
   const library = name === 'plugins' || name === 'skills' || name === 'pets';

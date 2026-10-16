@@ -21,6 +21,23 @@ export const pluginCatalog: PluginCatalogEntry[] = [
     ],
   },
   {
+    id: 'davinci-resolve',
+    name: 'DaVinci Resolve',
+    description: 'Inspect Resolve and build verified rough cuts on adapter-owned timelines through a narrow local MCP surface.',
+    icon: 'davinci',
+    color: '#8a6fcb',
+    source: { kind: 'python', package: 'dvr', version: '1.7.0', command: 'cos-davinci-adapter' },
+    homepage: 'https://github.com/mhadifilms/dvr',
+    license: 'MIT',
+    fields: [],
+    tools: ['resolve_health', 'resolve_inspect', 'resolve_prepare_ai_timeline', 'resolve_import_media', 'resolve_assemble_rough_cut', 'resolve_set_marker', 'resolve_set_basic_clip_properties', 'resolve_render_review', 'resolve_render_status', 'resolve_capture_frame'],
+    instructions: [
+      'Requires DaVinci Resolve with external scripting available. CoS selects an installed CPython only after a disposable Resolve connection probe succeeds.',
+      'Timeline writes require adapter-owned timelines and durable Resolve project and timeline IDs.',
+      'The curated adapter does not expose arbitrary scripting, shell execution, deletion, Color, Fusion or Fairlight workflows.',
+    ],
+  },
+  {
     id: 'memory',
     name: 'Knowledge Memory',
     description: 'A persistent local knowledge graph for your conversations.',

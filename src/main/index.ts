@@ -95,6 +95,7 @@ import { runShutdownSequence } from './shutdown.js';
 import { startAgentRuntimeGc, stopAgentRuntimeGc } from './runtime-gc.js';
 import { restoreManagedWorktrees } from './worktrees/index.js';
 import { applyStagedUpdate, startUpdateChecks } from './update.js';
+import { stopMediaProcesses } from './video-editing/media-runtime.js';
 import { UI_BASE_ZOOM, windowLayoutForDisplays, windowPlacementWasMaximized, titleBarOverlayForTheme, windowBackgroundForTheme } from './window-layout.js';
 import { openInPreferredBrowser } from './browser.js';
 import { loadedCosBrowser, onCosBrowserLoaded, syncCosBrowser } from './cos-browser/selection.js';
@@ -690,7 +691,7 @@ app.on('will-quit', (event) => {
       {
         name: 'process cleanup',
         budgetMs: 15_000,
-        run: () => [unifiedExecManager.terminateAllProcesses(), workspaceTerminalsExited(), stopComputerHelper(), shutdownPetOverlay(), pluginManager.close(),
+        run: () => [unifiedExecManager.terminateAllProcesses(), workspaceTerminalsExited(), stopComputerHelper(), shutdownPetOverlay(), pluginManager.close(), stopMediaProcesses(),
           Promise.resolve().then(() => loadedCosBrowser()?.stop())]
       },
       // Phase 3: recorder work can enqueue both session projections and named durable state.

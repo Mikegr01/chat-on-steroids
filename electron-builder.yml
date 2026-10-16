@@ -10,6 +10,8 @@ directories:
 # platform section so a package never carries another OS/CPU's executable payload.
 files:
   - out/**
+  # Native verifier has one real-filesystem resource owner outside ASAR.
+  - '!out/native/**/*'
   - package.json
   - '!node_modules/@img/sharp-*/**/*'
   - '!node_modules/@img/sharp-libvips-*/**/*'
@@ -80,6 +82,9 @@ win:
       to: node_modules
       filter: ['**/*']
   extraResources:
+    - from: out/native/windows-ucv/${arch}
+      to: windows-ucv/${arch}
+      filter: ['cos-windows-ucv.dll']
     - from: resources/packaging/native/win32/${arch}/node_modules/@img/sharp-win32-${arch}/README.md
       to: THIRD-PARTY-NOTICES-sharp-win32-${arch}.md
     - from: resources/packaging/tunnel/win32/${arch}

@@ -65,6 +65,7 @@ export interface PluginView {
   error?: string;
   tools: PluginToolView[];
   installedAt: number;
+  davinci?: { sourceEnd?: 'inclusive' | 'exclusive' | 'unknown'; guardVersion?: number };
 }
 export interface PluginSnapshot {
   plugins: PluginView[];
