@@ -524,7 +524,9 @@ class UnifiedExecProcess {
     try {
       // Windows pipe children have no console for Ctrl-C. Terminate the tree before
       // its leader disappears, otherwise descendants retain the session's pipes/cwd.
-      if (process.platform === 'win32') await terminateProcessTree(pid, true);
+      if (process.platform === 'win32') {
+        if (!(await terminateProcessTree(pid, true))) throw new Error('Windows process-tree retirement unresolved; custody retained');
+      }
       else process.kill(-pid, 'SIGINT');
     } catch (error) {
       // The managed session can outlive the OS process for the tiny window before Node's
@@ -537,6 +539,13 @@ class UnifiedExecProcess {
   }
 
   async terminate(): Promise<void> {
+    // On Windows kill the tree before touching a PTY handle: pty.kill can remove
+    // its leader before taskkill has enumerated the descendants.
+    if (process.platform === 'win32') {
+      if (this.pid <= 0 || !(await terminateProcessTree(this.pid, true))) {
+        throw UnifiedExecError.processFailed('Windows process-tree retirement unresolved; custody retained');
+      }
+    }
     if (this.pty) {
       try {
         this.pty.kill();
@@ -546,8 +555,8 @@ class UnifiedExecProcess {
       // node-pty queues `kill()` until the pty reports ready and drops it silently if that
       // never happens, so the process tree is the authority here, not the handle. `pid` is a
       // live read for exactly this reason.
-      if (this.pid > 0) await terminateProcessTree(this.pid, true);
-    } else if (this.child?.pid !== undefined) {
+      if (process.platform !== 'win32' && this.pid > 0) await terminateProcessTree(this.pid, true);
+    } else if (process.platform !== 'win32' && this.child?.pid !== undefined) {
       await terminateProcessTree(this.child.pid, true);
     }
     this.signalExit(this.exit);
@@ -679,6 +688,8 @@ export interface WriteStdinRequest {
 }
 
 export interface BackgroundTerminalInfo {
+  /** Tree retirement has not been confirmed, even if the leader has exited. */
+  retirementPending?: true;
   processId: number;
   incarnation: number;
   command: string;
@@ -689,6 +700,9 @@ export interface BackgroundTerminalInfo {
 }
 
 interface ProcessEntry {
+  retirementPending?: true;
+  /** One in-flight OS retirement; publication waits for it without releasing custody. */
+  retirement?: Promise<void>;
   classifyExit?: ExecCommandRequest['classifyExit'];
   batchMarker?: string;
   process: UnifiedExecProcess;
@@ -762,6 +776,7 @@ export class UnifiedExecProcessManager {
   }
 
   releaseProcessId(processId: number): void {
+    if (this.processes.get(processId)?.retirementPending) return;
     this.reservedProcessIds.delete(processId);
     this.processes.delete(processId);
     this.completed.delete(processId);
@@ -770,6 +785,7 @@ export class UnifiedExecProcessManager {
   }
 
   private retainCompleted(entry: ProcessEntry): void {
+    if (entry.retirementPending) return;
     const rawOutput = Buffer.from(entry.process.retainedOutput());
     const exitCode = entry.process.exitCode();
     this.processes.delete(entry.processId);
@@ -854,6 +870,7 @@ export class UnifiedExecProcessManager {
     let responseProcessId: number | null;
     let exitCode: number | null;
     if (processStartedAlive) {
+      await this.processes.get(request.processId)?.retirement;
       const status = this.refreshProcessState(request.processId);
       if (status.kind === 'alive') {
         responseProcessId = status.processId;
@@ -915,6 +932,7 @@ export class UnifiedExecProcessManager {
     if (saved) return saved;
     const entry = this.processes.get(request.processId);
     if (!entry) throw UnifiedExecError.unknownProcessId(request.processId);
+    if (entry.retirementPending) throw UnifiedExecError.processFailed('Process-tree retirement unresolved; custody retained');
     const locked = entry.process;
 
     // Reads and writes against one session must not overlap: they share a draining buffer.
@@ -931,7 +949,9 @@ export class UnifiedExecProcessManager {
         if (process.hasExited()) throw UnifiedExecError.processFailed('Process already completed; no input was sent. Use empty chars to read its retained output.');
         if (!tty) {
           if (request.input === INTERRUPT) {
+            if (globalThis.process.platform === 'win32') current.retirementPending = true;
             await process.interrupt();
+            delete current.retirementPending;
           } else {
             throw UnifiedExecError.stdinClosed();
           }
@@ -991,6 +1011,7 @@ export class UnifiedExecProcessManager {
         throw UnifiedExecError.processFailed(failure);
       }
 
+      await current.retirement;
       const status = statusAfterWrite ?? this.refreshProcessState(request.processId);
       let responseProcessId: number | null;
       let exitCode: number | null;
@@ -1029,9 +1050,10 @@ export class UnifiedExecProcessManager {
   /** Live sessions, oldest id first. */
   listProcesses(): BackgroundTerminalInfo[] {
     return [...this.processes.values()]
-      .filter((entry) => !entry.process.hasExited())
+      .filter((entry) => entry.retirementPending || !entry.process.hasExited())
       .sort((left, right) => left.processId - right.processId)
       .map((entry) => ({
+        ...(entry.retirementPending ? { retirementPending: true as const } : {}),
         processId: entry.processId,
         incarnation: entry.incarnation,
         command: entry.hookCommand,
@@ -1049,7 +1071,7 @@ export class UnifiedExecProcessManager {
     for (const entry of this.processes.values()) {
       if (entry.initialExecCommandActive) continue;
       if (!processIds.has(entry.processId)) continue;
-      if (entry.process.hasExited()) {
+      if (entry.process.hasExited() && !entry.retirementPending) {
         exitedUnread.push({ processId: entry.processId, exitCode: entry.process.exitCode() });
       } else {
         running.push(entry.processId);
@@ -1072,10 +1094,10 @@ export class UnifiedExecProcessManager {
     for (const id of processIds) {
       if (id === except) continue; // Explicit polling still owns its normal result path.
       const entry = this.processes.get(id);
-      if (!entry?.delivery?.offer) continue;
+      if (!entry?.delivery?.offer || entry.retirementPending) continue;
       const release = await entry.process.interactionLock.lock();
       try {
-        if (this.processes.get(id) !== entry) continue;
+        if (this.processes.get(id) !== entry || entry.retirementPending) continue;
         const offered = entry.delivery?.offer;
         if (!offered || offered.publication.failed || offered.publication.completedAt === null ||
             startedAt <= offered.publication.completedAt) continue;
@@ -1129,8 +1151,20 @@ export class UnifiedExecProcessManager {
     // Renderer actions carry the exact live incarnation they displayed. Refuse a stale row after
     // natural exit, and refuse ABA reuse of the same numeric id without consuming retained output.
     if (expectedIncarnation !== undefined &&
-        (entry.incarnation !== expectedIncarnation || entry.process.hasExited())) return false;
-    if (!entry.process.hasExited()) await entry.process.terminate();
+        (entry.incarnation !== expectedIncarnation || (entry.process.hasExited() && !entry.retirementPending))) return false;
+    if (!entry.process.hasExited() || entry.retirementPending) {
+      // Claim before awaiting the OS helper. A partial kill can emit leader exit while
+      // this call is suspended; neither polling nor cleanup may mistake that for proof.
+      entry.retirementPending = true;
+      entry.retirement ??= entry.process.terminate();
+      try {
+        await entry.retirement;
+        delete entry.retirementPending;
+      } finally {
+        delete entry.retirement;
+        this.notifyProcessChange();
+      }
+    }
     const current = this.processes.get(processId);
     if (current && current.process === entry.process) {
       // Match Codex's InitialExecCommandGuard: the initial exec response still
@@ -1144,23 +1178,18 @@ export class UnifiedExecProcessManager {
   }
 
   async terminateAllProcesses(): Promise<void> {
-    const entries = [...this.processes.values()];
-    for (const id of new Set([...this.reservedProcessIds, ...this.completed.keys()])) this.releaseListener?.(id);
-    this.completed.clear();
-    this.processes.clear();
-    this.reservedProcessIds.clear();
-    // App shutdown is the caller that matters, so this has to behave like `terminateProcess`
-    // does for one id: skip the sessions that are already gone rather than spending a taskkill
-    // on each. Awaiting them one after another also made a quit cost the *sum* of every
-    // termination, and let a single rejection abandon every session queued behind it.
-    await Promise.allSettled(
-      entries.filter((entry) => !entry.process.hasExited()).map((entry) => entry.process.terminate())
-    );
+    // All siblings get their cleanup attempt. Failed trees keep their exact manager
+    // entry and owner, and shutdown receives a failure instead of a false success.
+    const results = await Promise.allSettled([...this.processes.keys()].map(id => this.terminateProcess(id)));
+    for (const id of new Set([...this.reservedProcessIds, ...this.completed.keys()])) this.releaseProcessId(id);
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Process-tree retirement unresolved; custody retained');
   }
 
   private refreshProcessState(processId: number): ProcessStatus {
     const entry = this.processes.get(processId);
     if (!entry) return { kind: 'unknown' };
+    if (entry.retirementPending) throw UnifiedExecError.processFailed('Process-tree retirement unresolved; custody retained');
     const exitCode = entry.process.exitCode();
     if (entry.process.hasExited()) {
       this.retainCompleted(entry);

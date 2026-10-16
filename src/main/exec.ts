@@ -205,7 +205,7 @@ export async function terminateProcessTree(
   pid: number,
   force = true,
   helperTimeoutMs = force ? 1_000 : 500
-): Promise<void> {
+): Promise<boolean> {
   // child.kill() leaves grandchildren running on Windows; taskkill /T handles the tree.
   // taskkill itself can block while waiting on an uncooperative console process, so
   // bound the helper too. The caller owns the larger graceful/forced deadline.
@@ -233,9 +233,9 @@ export async function terminateProcessTree(
           env: childEnv()
         });
         killer.once('error', () => finish(false));
-        // Exit code 128 is "no such process", which is the outcome asked for. Anything
-        // else non-zero means the tree may still be standing and the fallback should run.
-        killer.once('close', (code) => finish(code === 0 || code === 128));
+        // A missing leader (128) cannot prove its descendants exited. Only successful
+        // tree termination permits an owner to release custody.
+        killer.once('close', (code) => finish(code === 0));
         timer = setTimeout(() => {
           try {
             killer.kill();
@@ -248,17 +248,9 @@ export async function terminateProcessTree(
         finish(false);
       }
     });
-    if (killed) return;
-    // The helper could not do it. Killing the process directly leaves grandchildren behind
-    // — which is why taskkill is tried first — but it does end the child the caller is
-    // waiting on, and a caller that gets its close event and a partial result is strictly
-    // better than one that waits forever on a process nothing ever signalled.
-    try {
-      process.kill(pid, force ? 'SIGKILL' : 'SIGTERM');
-    } catch {
-      /* already gone */
-    }
-    return;
+    // Never degrade to leader-only termination: that destroys the tree's addressing
+    // anchor while allowing descendants to survive. The live owner decides failure.
+    return killed;
   }
   // POSIX has a first-class process-group primitive. Every child this module owns is
   // started as its own group leader below, so signalling -pid reaches descendants too.
@@ -267,7 +259,7 @@ export async function terminateProcessTree(
   const signal = force ? 'SIGKILL' : 'SIGTERM';
   try {
     process.kill(-pid, signal);
-    return;
+    return true;
   } catch {
     /* group is gone or was not created */
   }
@@ -276,6 +268,7 @@ export async function terminateProcessTree(
   } catch {
     /* already gone */
   }
+  return true;
 }
 
 function killTree(pid: number): void {

@@ -1067,6 +1067,12 @@ awaits correlation. Only that request can initially continue its process. Exact 
 the request principal equivalent to its durable session, so A→B compaction lets B continue
 A's live terminal and receive its retained output without rerunning a command.
 Another session/worker cannot poll or write it. Anonymous process custody is non-adoptable.
+Windows retirement requires successful tree termination before dropping the manager row or
+custody. Missing/refused/timed-out taskkill, including a missing leader after partial termination,
+leaves `retirementPending` in the existing manager and rejects session deletion. Leader exit,
+output collection, explicit id release and shutdown cannot clear that unresolved tree. Shutdown
+attempts every sibling and reports failures through its existing bounded teardown. Custody is
+app-lifetime state; this is not durable process recovery or OS containment.
 Refusals distinguish unavailable ids, anonymous launch custody, missing caller proof and a
 different owning session. Only missing caller proof invites retry after identity recovery and
 participates in the existing recovered-identity notice. No refusal proves a command should be
