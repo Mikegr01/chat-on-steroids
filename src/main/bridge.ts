@@ -5518,7 +5518,7 @@ async function startBridgeOnce(epoch: number, prepared?: PreparedBridge): Promis
   // A stopped bridge is not a sleeping computer: the first tick of a new timer measures no gap.
   lastRecoverySweepTickAt = 0;
   staleSwarmTimer = setInterval(() => {
-    noteRecoverySweepTick(Date.now());
+    maintenanceRecoverySweepTick();
     void runStaleSwarmSweep().catch((err: Error) => logWarn(`stale swarm sweep failed: ${err.message}`));
     void retryUnclaimedBrowserInputs().catch((err: Error) => logWarn(`unclaimed browser input recovery failed: ${err.message}`));
   }, STALE_SWARM_SWEEP_MS);
@@ -6698,6 +6698,21 @@ export function noteRecoverySweepTick(now: number): boolean {
   }
   logInfo(`bridge: nothing ran for ${Math.round(gap / 60_000)} minute(s) (the computer slept, or this app was paused) — ${held} working chat(s) get ${WAKE_GRACE_MS / 1000} seconds to report before any recovery`);
   return true;
+}
+
+/**
+ * The process-owned wall clock is captured before any test-local Date.now spy can replace it.
+ * Sleep/wake detection belongs to the bridge process, not to a synthetic conversation clock.
+ */
+const maintenanceWallClockNow = Date.now.bind(Date);
+
+/** The process-owned maintenance clock, exposed only so synthetic-time integration tests can fence it. */
+function maintenanceRecoverySweepTick(): boolean {
+  return noteRecoverySweepTick(maintenanceWallClockNow());
+}
+
+export function maintenanceRecoverySweepTickForTests(): boolean {
+  return maintenanceRecoverySweepTick();
 }
 
 /** Chats reloaded by the app whose page has given no sign of life since. */
