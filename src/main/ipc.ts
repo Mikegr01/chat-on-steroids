@@ -114,7 +114,7 @@ import {
   followChatInBackground
 } from './bridge.js';
 import { extensionDir } from './extension-path.js';
-import { APP_VERSION, extensionDownloadUrl } from './version.js';
+import { APP_VERSION } from './version.js';
 import {
   deleteSession,
   clearImageStorage,
@@ -1642,9 +1642,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   handle('bridge:diagnostics', async () => companionDiagnostics());
 
   handle('bridge:downloadExtension', async () => {
-    // This is a recovery path for the extension bundled with *this installed app*. Never use
-    // releases/latest here: an old app must not fetch a newer extension with a newer protocol.
-    await shell.openExternal(extensionDownloadUrl(app.getVersion()));
+    // Custom builds have no trusted remote release channel yet. Recovery must stay inside this
+    // installation rather than opening the ordinary upstream extension, which targets another app.
+    const dir = extensionDir();
+    if (!dir) throw new Error('The bundled custom extension folder is missing from this installation.');
+    const error = await shell.openPath(dir);
+    if (error) throw new Error(`Could not open the custom extension folder: ${error}`);
     return true;
   });
 

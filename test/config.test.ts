@@ -31,7 +31,7 @@ describe('browser bridge port config', () => {
     const legacy = defaultConfig(); delete legacy.ui.browserBridgePort;
     await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
     expect((await loadConfig()).ui.browserBridgePort).toBe('auto');
-    for (const browserBridgePort of ['auto', 8765, 8766, 8767, 8768, 8769] as const) {
+    for (const browserBridgePort of ['auto', 8775, 8776, 8777, 8778, 8779] as const) {
       await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, browserBridgePort } });
       expect((await loadConfig()).ui.browserBridgePort).toBe(browserBridgePort);
     }

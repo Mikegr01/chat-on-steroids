@@ -3,6 +3,7 @@ import { cosSignInTransfer, SignInTransferError } from './cos-browser/sign-in-tr
 import { externalBrowserProof, noteExternalInstalled, noteExternalSignedIn, resetBrowserProofForTests } from './browser-proof.js';
 import { notePluginInstalled, notePluginMissing } from './connector-proof.js';
 import { connectorNames } from '../shared/connector-names.js';
+import { CUSTOM_APP_IDENTITY } from '../shared/app-identity.js';
 import { connectorApps, conversationCreatedAt, noteAppSightings, type AppSighting } from './connector-identity.js';
 import { messageReaction } from '../shared/message-reaction.js';
 import { browserControl } from './browser-control.js';
@@ -2222,7 +2223,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       200,
       {
-        app: 'chat-on-steroids',
+        app: CUSTOM_APP_IDENTITY.bridgeAppId,
         version: APP_VERSION,
         bridge: BRIDGE_PROTOCOL,
         // Unknown, not incompatible, for a caller that states no protocol (curl in a bug report).

@@ -21,6 +21,7 @@ describe('native window activation', () => {
     let options: Record<string, unknown> | undefined;
     vm.runInNewContext(constructor, {
       BrowserWindow: function (value: Record<string, unknown>) { options = value; },
+      CUSTOM_APP_IDENTITY: { productName: 'Chat On Steroids Custom' },
       layout: {}, icon: null, process: { platform },
       titleBarOverlayForTheme: () => ({}), windowBackgroundForTheme: () => '#181818', getConfig: () => ({ ui: { theme: 'dark' } }),
       UI_BASE_ZOOM: 1, path: { join: () => 'preload.js' }, __dirname: '/app'

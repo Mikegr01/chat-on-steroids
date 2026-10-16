@@ -16,11 +16,11 @@ describe('bridge port candidates', () => {
     expect(bridgePortSelection(8767, 'bad,-1')).toEqual({ candidates: [8767], overridden: false });
     expect(bridgePortSelection('auto', '8768suffix')).toEqual({ candidates: [8768], overridden: true });
   });
-  it('falls back to two distant ranges when Windows reserves 8765-8769 (#1314)', () => {
+  it('falls back to two distant ranges when Windows reserves 8775-8779 (#1314)', () => {
     // Hyper-V, WSL2 and Docker reserve blocks of ports; one reserved block covered the whole
     // range, so the bridge could not listen anywhere and the extension never connected.
-    expect(BROWSER_BRIDGE_PORTS).toEqual([8765, 8766, 8767, 8768, 8769]);
-    expect(BROWSER_BRIDGE_FALLBACK_PORTS).toEqual([18765, 18766, 18767, 18768, 18769, 38765, 38766, 38767, 38768, 38769]);
+    expect(BROWSER_BRIDGE_PORTS).toEqual([8775, 8776, 8777, 8778, 8779]);
+    expect(BROWSER_BRIDGE_FALLBACK_PORTS).toEqual([18775, 18776, 18777, 18778, 18779, 38775, 38776, 38777, 38778, 38779]);
     expect(BROWSER_BRIDGE_AUTO_PORTS).toEqual([...BROWSER_BRIDGE_PORTS, ...BROWSER_BRIDGE_FALLBACK_PORTS]);
   });
   it('lets the extension find every port Auto may choose', () => {

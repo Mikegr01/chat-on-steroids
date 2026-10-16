@@ -27,9 +27,10 @@ import './i18n.js';
 
 const activeTabs = globalThis.chrome?.debugger ? createActiveTabs(chrome) : null;
 
-// The app's Auto order (src/shared/browser-bridge.ts): the primary range, then two fallback ranges
-// for when Windows reserves 8765-8769 (#1314). Refused local ports fail at once, so scanning is cheap.
-const PORTS = [8765, 8766, 8767, 8768, 8769, 18765, 18766, 18767, 18768, 18769, 38765, 38766, 38767, 38768, 38769];
+// The custom app's Auto order (src/shared/browser-bridge.ts): a disjoint primary range, then two
+// disjoint fallback ranges. Refused local ports fail at once, so scanning is cheap.
+const PORTS = [8775, 8776, 8777, 8778, 8779, 18775, 18776, 18777, 18778, 18779, 38775, 38776, 38777, 38778, 38779];
+const BRIDGE_APP = 'chat-on-steroids-custom';
 const HELLO_TIMEOUT_MS = 1200;
 const REQUEST_TIMEOUT_MS = 10_000;
 /** A journal receipt follows durable session writes, which can outlast an ordinary read. */
@@ -1076,7 +1077,7 @@ async function hello(candidate) {
     }, HELLO_TIMEOUT_MS);
     if (!response.ok) return null;
     const body = await response.json();
-    return body && body.app === 'chat-on-steroids' ? body : null;
+    return body && body.app === BRIDGE_APP ? body : null;
   } catch {
     return null;
   }
