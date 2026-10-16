@@ -11,9 +11,10 @@ describe('bridge port candidates', () => {
     }
   });
   it('preserves the existing environment parser and ephemeral test isolation', () => {
-    expect(bridgePortSelection(8767, '0')).toEqual({ candidates: [0], overridden: true });
-    expect(bridgePortSelection(8767, '12345, bad, 65536, -1, 0')).toEqual({ candidates: [12345, 0], overridden: true });
-    expect(bridgePortSelection(8767, 'bad,-1')).toEqual({ candidates: [8767], overridden: false });
+    const fixedPort = BROWSER_BRIDGE_PORTS[2];
+    expect(bridgePortSelection(fixedPort, '0')).toEqual({ candidates: [0], overridden: true });
+    expect(bridgePortSelection(fixedPort, '12345, bad, 65536, -1, 0')).toEqual({ candidates: [12345, 0], overridden: true });
+    expect(bridgePortSelection(fixedPort, 'bad,-1')).toEqual({ candidates: [fixedPort], overridden: false });
     expect(bridgePortSelection('auto', '8768suffix')).toEqual({ candidates: [8768], overridden: true });
   });
   it('falls back to two distant ranges when Windows reserves 8775-8779 (#1314)', () => {
