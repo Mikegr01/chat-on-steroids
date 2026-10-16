@@ -4749,7 +4749,11 @@ npm run dist:dir:mac:x64            # example unpacked target on a matching host
 ```
 
 Use `npm ci` for an intentionally needed reproducible dependency install, not as routine
-cleanup of this shared tree. `verify:ci` fetches rg, checks privacy/notices/native-source metadata,
+cleanup of this shared tree. `verify:ci` first runs `verify:windows-native`: Windows compiles the
+host UCV DLL and requires real Node plus production-loader Electron ABI/availability checks.
+Missing/unloadable DLLs and missing exports fail; only non-Windows hosts skip native execution.
+`verify:windows-native -- --load-only` audits the staged artifact without rebuilding it first.
+The remaining `verify:ci` sequence fetches rg, checks privacy/notices/native-source metadata,
 typechecks, verifies Electron resolves, runs Vitest excluding `computer` and `mcp-shutdown`,
 then runs those suites with one worker. The real desktop foreground assertion must not compete
 with other suites' native windows or input; its assertions remain unchanged. `vitest.config.ts`
