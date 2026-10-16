@@ -1,5 +1,5 @@
 import { ChildProcess, execFile, spawn, type SpawnOptions } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listInstalledCodexPlugins } from '../src/main/codex-plugin-runtime.js';
 import { deleteEnvValue, envValue, normalizeEnvironment } from '../src/main/env.js';
+import { removeTempDir } from './helpers.js';
 
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(), spawn: vi.fn()
@@ -41,7 +42,7 @@ describe.runIf(process.platform === 'win32')('Windows Codex runtime launch bound
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
-    if (directory) await rm(directory, { recursive: true, force: true });
+    if (directory) await removeTempDir(directory);
   });
 
   it('runs the npm JavaScript entry in Node mode without a shell or parent-environment mutation', async () => {
@@ -114,7 +115,7 @@ describe.runIf(process.platform === 'win32')('Windows Codex runtime launch bound
     deleteEnvValue(environment, 'ELECTRON_RUN_AS_NODE');
     const electron = createRequire(import.meta.url)('electron') as string;
     const result = await promisify(execFile)(electron, [parent], {
-      env: environment, cwd: directory, windowsHide: true, timeout: 25_000, maxBuffer: 32_768
+      env: environment, windowsHide: true, timeout: 25_000, maxBuffer: 32_768
     });
     expect(result.stdout).toContain('CODEX_NODE_LAUNCH_VERIFIED');
   }, 35_000);
@@ -138,7 +139,7 @@ describe('Codex runtime environment', () => {
   });
   afterEach(async () => {
     vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllEnvs();
-    if (directory) await rm(directory, { recursive: true, force: true });
+    if (directory) await removeTempDir(directory);
   });
 
   it('never hands connector or tunnel secrets to whatever codex is first on PATH', async () => {
