@@ -50,6 +50,12 @@ import { turnTrace, type TurnTrace } from '../../shared/turn-trace.js';
 import { getConfig } from '../config.js';
 import { logError, logInfo, logWarn } from '../logger.js';
 import { retireExecProcessesForSession } from '../codex/ownership.js';
+import {
+  ContextArtifactStore,
+  type ContextArtifactReadResult,
+  type ContextArtifactSearchResult,
+  type ContextArtifactWriter
+} from './context-artifacts.js';
 
 /**
  * Caps on how much of a value is written *inline*, into the JSONL line itself.
@@ -83,6 +89,7 @@ const ATTACHMENT_CATALOG_READ_CONCURRENCY = 64;
 const CANONICAL_SHARD_READ_CONCURRENCY = 8;
 
 let root = '';
+let contextArtifactStore: ContextArtifactStore | null = null;
 /**
  * Current-conversation misses already proven against this process's durable catalog.
  *
@@ -158,6 +165,7 @@ function rememberMissingCurrentConversation(conversationId: string): void {
 
 export function initSessionStore(userDataDir: string): void {
   root = path.join(userDataDir, 'sessions');
+  contextArtifactStore = new ContextArtifactStore(root);
   recentUnreadableWarned.clear();
   sessionAssetUsage.clear();
   globalAssetUsage = null;
@@ -173,6 +181,11 @@ export function initSessionStore(userDataDir: string): void {
 
 export function sessionsRoot(): string {
   return root;
+}
+
+function contextArtifacts(): ContextArtifactStore {
+  assertReady();
+  return contextArtifactStore ??= new ContextArtifactStore(root);
 }
 
 /**
@@ -4168,6 +4181,37 @@ export async function readOverflowText(sessionId: string, assetId: string): Prom
   return data ? data.toString('utf8') : null;
 }
 
+// ------------------------------------------------------- context artifacts
+
+/** Starts immutable evidence capture under this session's existing retention ownership. */
+export function beginContextArtifact(sessionId: string, operationId: string): Promise<ContextArtifactWriter> {
+  assertSessionId(sessionId);
+  return contextArtifacts().begin({ sessionId, operationId, kind: 'exec-output' });
+}
+
+/** Exact bounded byte-range retrieval; the opaque ref is resolved only inside this session. */
+export function readContextArtifact(
+  sessionId: string,
+  ref: string,
+  offset: number,
+  length: number
+): Promise<ContextArtifactReadResult> {
+  assertSessionId(sessionId);
+  return contextArtifacts().read(sessionId, ref, offset, length);
+}
+
+/** Deterministic literal search over one exact committed artifact. */
+export function searchContextArtifact(
+  sessionId: string,
+  ref: string,
+  query: string,
+  maxMatches?: number,
+  contextBytes?: number
+): Promise<ContextArtifactSearchResult> {
+  assertSessionId(sessionId);
+  return contextArtifacts().search(sessionId, ref, query, maxMatches, contextBytes);
+}
+
 // --------------------------------------------------------------- handoffs
 
 export async function saveHandoff(handoff: Handoff): Promise<void> {
@@ -4252,6 +4296,7 @@ export async function deleteSession(id: string): Promise<void> {
     await entry.queue.catch(() => undefined);
     open.delete(id);
   }
+  await contextArtifactStore?.sessionDeleted(id);
   await fs.rm(sessionDir(id), { recursive: true, force: true });
   for (const key of [...traceCache.keys()]) if (key.startsWith(`${id}\u0000`)) traceCache.delete(key);
   invalidateAssetUsage(id);
@@ -4278,11 +4323,13 @@ export function resetSessionStoreForTests(): void {
   attachmentCatalog = null;
   attachmentCatalogLoading = null;
   attachmentEpoch = 0;
+  contextArtifactStore = root === '' ? null : new ContextArtifactStore(root);
 }
 
 /** Test seam: puts the store back to never having been told where to write. */
 export function unsetSessionRootForTests(): void {
   root = '';
+  contextArtifactStore = null;
   recentUnreadableWarned.clear();
   sessionAssetUsage.clear();
   traceCache.clear();
