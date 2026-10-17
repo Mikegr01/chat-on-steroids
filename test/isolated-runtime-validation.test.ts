@@ -202,10 +202,10 @@ describe('isolated real-runtime profile admission', () => {
     const prefix = path.join(root, 'prefix');
     fs.mkdirSync(prefix);
     const realpath = fs.realpathSync.native;
-    vi.spyOn(fs.realpathSync, 'native').mockImplementation(((value, options) => {
+    vi.spyOn(fs.realpathSync, 'native').mockImplementation((value: fs.PathLike) => {
       if (value === prefix) fs.rmdirSync(prefix);
-      return realpath(value, options);
-    }) as typeof fs.realpathSync.native);
+      return realpath(value);
+    });
     expect(() => select(target, path.join(prefix, path.basename(candidate)))).toThrow();
     expect(paths.userData).toBeUndefined();
     expect(fs.existsSync(prefix)).toBe(false);
