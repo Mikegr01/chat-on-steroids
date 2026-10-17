@@ -70,6 +70,7 @@ describe('portable browser-backed feature parity', () => {
       'save_image',
       'exec_command',
       'write_stdin',
+      'context_artifact',
       'update_plan',
       'agents',
       'session_finish',

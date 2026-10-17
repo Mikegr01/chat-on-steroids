@@ -327,6 +327,7 @@ describe('terminal sessions at shutdown', () => {
       processId: manager.allocateProcessId(),
       process: {
         hasExited: () => exited,
+        contextArtifactResult: async () => ({}),
         terminate: async () => {
           terminated.push(name);
           if (reject) throw new Error(`${name} refused`);
@@ -348,5 +349,37 @@ describe('terminal sessions at shutdown', () => {
     expect(terminated).not.toContain('already-exited');
     expect(store.size).toBe(1);
     expect(store.get(1)).toMatchObject({ retirementPending: true });
+  });
+
+  it('waits for retained completed-artifact finalization before shutdown releases history', async () => {
+    const manager = new UnifiedExecProcessManager(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS);
+    let releaseArtifact!: () => void;
+    let settled = false;
+    const artifactResult = new Promise<{ descriptor?: never; error?: never }>(resolve => {
+      releaseArtifact = () => resolve({});
+    });
+    const completed = (manager as unknown as {
+      completed: Map<number, {
+        identity: object;
+        rawOutput: Buffer;
+        exitCode: number;
+        benignExit: boolean;
+        artifactResult: Promise<{ descriptor?: never; error?: never }>;
+      }>;
+      reservedProcessIds: Map<number, object>;
+    });
+    completed.reservedProcessIds.set(7, {});
+    completed.completed.set(7, {
+      identity: {}, rawOutput: Buffer.from('done'), exitCode: 0, benignExit: false, artifactResult
+    });
+
+    const stopping = manager.terminateAllProcesses().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(completed.completed.has(7)).toBe(true);
+    releaseArtifact();
+    await stopping;
+    expect(settled).toBe(true);
+    expect(completed.completed.has(7)).toBe(false);
   });
 });

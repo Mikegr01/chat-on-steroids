@@ -1,3 +1,6 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
@@ -7,6 +10,14 @@ import { createRegistrar, type ToolResult } from '../src/main/mcp/kernel.js';
 import { registerCoreTools } from '../src/main/mcp/tools-core.js';
 import { DEFAULT_CAPABILITIES } from '../src/shared/types.js';
 import type { PluginToolSchema } from '../src/shared/plugin-refresh.js';
+import { emptyEvidence, runInCallContext, type CallContext } from '../src/main/mcp/call-context.js';
+import {
+  beginContextArtifact,
+  createSession,
+  initSessionStore,
+  resetSessionStoreForTests,
+  unsetSessionRootForTests
+} from '../src/main/session/store.js';
 
 async function rpc(handler: ReturnType<typeof createMcpHandler>, method: string, params: Record<string, unknown> = {}) {
   const response = await handler.fetch(new Request('http://localhost/mcp', {
@@ -99,4 +110,46 @@ it('shares schemas without capturing the preceding request permission snapshot i
   expect(JSON.stringify(await register(false))).toContain('TOOL_DISABLED');
   expect(JSON.stringify(await register(true))).not.toContain('TOOL_DISABLED');
   expect(JSON.stringify(await register(false))).toContain('TOOL_DISABLED');
+});
+
+it('wires context_artifact through exact local session identity only', async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-context-artifact-mcp-'));
+  initSessionStore(temp);
+  const owner = await createSession({ title: 'artifact owner' });
+  const other = await createSession({ title: 'artifact other' });
+  const writer = await beginContextArtifact(owner.id, 'call-wire');
+  if (!writer.write(Buffer.from('prefix EXACT_WIRE_MARKER suffix'))) await writer.waitForDrain();
+  const descriptor = await writer.commit();
+
+  const ctx: ToolContext = {
+    roots: [], caps: { ...DEFAULT_CAPABILITIES, command: true }, exposedCaps: { ...DEFAULT_CAPABILITIES, command: true },
+    readOnly: false, sessionTools: false, agentTools: false, exposedFinishTool: false
+  };
+  const server = new McpServer({ name: 'context artifact fixture', version: '1' });
+  const registrar = createRegistrar(server, ctx, 'core');
+  let invoke!: (args: never) => Promise<ToolResult>;
+  registrar.register = (name, _config, handler) => { if (name === 'context_artifact') invoke = handler; };
+  registerCoreTools(registrar);
+  await server.close();
+
+  const call = (sessionId: string | null) => {
+    const context: CallContext = {
+      startedAt: Date.now(), transportKey: null, agent: null,
+      caller: { transportKey: null, requestId: 'request-wire', conversationId: null, sessionId },
+      outcome: null, evidence: emptyEvidence()
+    };
+    return runInCallContext(context, () => invoke({
+      action: 'search', ref: descriptor.ref, query: 'EXACT_WIRE_MARKER', max_matches: 1, context_bytes: 8
+    } as never));
+  };
+
+  try {
+    expect(JSON.stringify(await call(owner.id))).toContain('EXACT_WIRE_MARKER');
+    expect(JSON.stringify(await call(other.id))).toContain('CONTEXT_ARTIFACT_NOT_AVAILABLE');
+    expect(JSON.stringify(await call(null))).toContain('CONTEXT_ARTIFACT_OWNER_UNAVAILABLE');
+  } finally {
+    resetSessionStoreForTests();
+    unsetSessionRootForTests();
+    await fs.rm(temp, { recursive: true, force: true });
+  }
 });

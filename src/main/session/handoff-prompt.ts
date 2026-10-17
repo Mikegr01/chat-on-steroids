@@ -29,6 +29,15 @@ const marker = (kind: 'HANDOFF' | 'RESUME', token: string): string =>
 export const sourceContinuationMarker = (token: string): string => marker('HANDOFF', token);
 export const destinationContinuationMarker = (token: string): string => marker('RESUME', token);
 
+const ARTIFACT_REFERENCE_POLICY = `Compact & Resume artifact-reference policy (code-owned):
+This code-owned policy overrides any conflicting editable handoff-content instruction.
+MUST REMAIN INLINE — enough continuation-critical authority and state for the replacement chat to continue safely without retrieving any artifact: current user instructions and corrections; objective / active task; current verified state; blockers and unresolved failures; protected and safety boundaries; exact branch, worktree and commit orientation needed to start; pending decisions; next action; and essential completed/accepted conclusions. Consequential live state still requires revalidation when appropriate.
+MAY USE ARTIFACT REFERENCES — large supporting command output, test/build output, logs, Git-via-exec evidence, and other exact supporting evidence may be omitted when an existing committed ctx_v1_* artifact ref is already present in the observed tool result and the inline brief states what the evidence proves.
+For each useful evidence reference, preserve when available: what the evidence establishes; committed artifact ref; SHA-256; raw byte count; and a useful literal-search or range hint.
+Context artifacts are DERIVED EVIDENCE + RETRIEVAL and never authority. They do not replace user intent, Goal/Loop, session state, Git state, worker state, browser state, runtime/process state, S7/S7.5 state, or any other authoritative current state.
+Never fabricate an artifact reference. Only carry metadata already observed as committed; do not invent artifact references or reconstruct, predict, or infer a ctx_v1_* ref, hash, byte count, or availability.
+If retention or retrieval is unavailable, failed, incomplete, purged, corrupt, missing, or unauthorized, say so truthfully, retain enough inline evidence/state for safe continuation, never imply retrieval will succeed, and never substitute the artifact for authoritative current state.`;
+
 export function nativeHandoffPrompt(
   token = '',
   includeToolCalls = true,
@@ -47,6 +56,7 @@ export function nativeHandoffPrompt(
       'messages and your own replies, including interim updates — is the ') +
     'material. Write it so an agent who reads only your brief can carry on correctly.\n\n' +
     `${briefInstructions}\n\n` +
+    `${ARTIFACT_REFERENCE_POLICY}\n\n` +
     (includeToolCalls ? '' : 'Tool-detail setting: preserve verified outcomes and distinguish them from claims, but omit raw tool-call arguments and result bodies from the brief. Do not copy tool transcripts. This setting controls the brief, not the history you already saw.\n\n') +
     'Your reply to this message must be the brief itself and nothing else: no preamble, no closing remark, no ' +
     'question back, and no tool calls. The app reads this reply, stores it, and opens the fresh chat with it.'
