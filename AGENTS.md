@@ -290,7 +290,8 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 **Intent:** open a usable local workspace, restore accepted work consistently, and exit without
 leaving an invisible process, tool, writer or installer competing with the next launch.
 
-The single-instance lock must be won before touching shared userData. The losing process marks
+The single-instance lock must be won before touching shared production userData. Disposable
+validation-profile admission is the narrow pre-lock exception described below. The losing process marks
 itself quitting immediately; `app.quit()` alone does not stop module evaluation. Activation from
 second-instance/tray/Dock is gated until restore, CSP, permissions and IPC are ready. Once quit
 begins, no delayed startup callback may re-enable window creation.
