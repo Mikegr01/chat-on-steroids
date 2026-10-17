@@ -396,7 +396,7 @@ export class ContextArtifactStore {
     return { ref, query, total, sha256: manifest.sha256, matches };
   }
 
-  async sessionDeleted(sessionId: string): Promise<void> {
+  async sessionDeleting(sessionId: string): Promise<void> {
     safeSessionId(sessionId);
     await this.ensureInitialized();
     this.retiredSessions.add(sessionId);
@@ -405,6 +405,11 @@ export class ContextArtifactStore {
       .map(([, writer]) => writer)
       .filter(writer => writer.sessionId === sessionId);
     await Promise.all(active.map(writer => writer.retire()));
+  }
+
+  async sessionDeleted(sessionId: string): Promise<void> {
+    safeSessionId(sessionId);
+    await this.sessionDeleting(sessionId);
     const committed = this.committedSessionBytes.get(sessionId) ?? 0;
     this.committedGlobalBytes = Math.max(0, this.committedGlobalBytes - committed);
     this.committedSessionBytes.delete(sessionId);

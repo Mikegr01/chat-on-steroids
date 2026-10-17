@@ -146,6 +146,27 @@ it('retires an active pre-launch artifact writer before deleting its owning sess
   await expect(beginContextArtifact(session.id, 'call-after-delete')).rejects.toMatchObject({ code: 'NOT_AVAILABLE' });
 });
 
+it('keeps committed bytes charged while session deletion is fenced but not yet durable', async () => {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-context-delete-accounting-'));
+  const sessionsRoot = path.join(dir, 'sessions');
+  for (const id of ['session-alpha', 'session-bravo']) await fs.mkdir(path.join(sessionsRoot, id), { recursive: true });
+  const store = new ContextArtifactStore(sessionsRoot, { artifactBytes: 8, sessionBytes: 8, globalBytes: 8 });
+  await writeArtifact(store, 'session-alpha', 'call-alpha', Buffer.alloc(8, 0x41));
+
+  await store.sessionDeleting('session-alpha');
+  const blocked = await store.begin({ sessionId: 'session-bravo', operationId: 'call-blocked', kind: 'exec-output' });
+  expect(() => blocked.write(Buffer.from('B'))).toThrowError(ContextArtifactError);
+  try { blocked.write(Buffer.from('B')); } catch (error) { expect(error).toMatchObject({ code: 'QUOTA_EXCEEDED' }); }
+  await blocked.abort();
+
+  await fs.rm(path.join(sessionsRoot, 'session-alpha'), { recursive: true, force: true });
+  await store.sessionDeleted('session-alpha');
+  const admitted = await store.begin({ sessionId: 'session-bravo', operationId: 'call-admitted', kind: 'exec-output' });
+  expect(admitted.write(Buffer.alloc(8, 0x42))).toBe(false);
+  await admitted.waitForDrain();
+  await admitted.abort();
+});
+
 it('captures exact unified-exec bytes before truncation without replacing current execution custody', async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-context-exec-'));
   const sessionsRoot = path.join(dir, 'sessions');

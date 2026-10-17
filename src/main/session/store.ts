@@ -4296,8 +4296,9 @@ export async function deleteSession(id: string): Promise<void> {
     await entry.queue.catch(() => undefined);
     open.delete(id);
   }
-  await contextArtifactStore?.sessionDeleted(id);
+  await contextArtifactStore?.sessionDeleting(id);
   await fs.rm(sessionDir(id), { recursive: true, force: true });
+  await contextArtifactStore?.sessionDeleted(id);
   for (const key of [...traceCache.keys()]) if (key.startsWith(`${id}\u0000`)) traceCache.delete(key);
   invalidateAssetUsage(id);
   publishAttachmentRemoval(id);
