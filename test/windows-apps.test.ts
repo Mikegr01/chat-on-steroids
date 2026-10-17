@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -108,4 +108,44 @@ if ($null -ne $launched) { if (!$launched.WaitForExit(3000)) { throw 'Owned PATH
 Write-Output 'APP_EXECUTABLE_VERIFIED'
 `)).toBe('APP_EXECUTABLE_VERIFIED');
   });
+
+  it('proves a launched console application cannot write into the helper protocol stdout', async () => {
+    expect(await run(String.raw`
+$executable=Join-Path $PSScriptRoot 'cos-noisy-app.exe'
+Add-Type -TypeDefinition 'public static class NoisyApp { public static void Main(string[] args) { System.Console.WriteLine("CHILD_STDOUT_CORRUPTION"); } }' -OutputAssembly $executable -OutputType ConsoleApplication
+$result=Launch-WindowsApp @{app=$executable}
+$launched=Get-Process -Id $result.processId -ErrorAction SilentlyContinue
+if ($null -ne $launched) { if (!$launched.WaitForExit(3000)) { throw 'Noisy app failed to exit' }; $launched.Dispose() }
+Write-Output '{"ok":true,"completed_count":1}'
+`)).toBe('{"ok":true,"completed_count":1}');
+  });
+
+  it('lets the helper exit while a launched application keeps running independently', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'cos-app-detach-test-'));
+    try {
+      const file = path.join(directory, 'detach.ps1');
+      await writeFile(file, `$ErrorActionPreference='Stop'\nfunction Get-WindowRows { return @() }\n${WINDOWS_APPS_SCRIPT}\n${String.raw`
+$executable=Join-Path $PSScriptRoot 'cos-detached-app.exe'
+$marker=Join-Path $PSScriptRoot 'detached.txt'
+Add-Type -TypeDefinition 'public static class DetachedApp { public static void Main(string[] args) { System.Threading.Thread.Sleep(3000); System.IO.File.WriteAllText(System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory,"detached.txt"),"SURVIVED_HELPER_EXIT"); } }' -OutputAssembly $executable -OutputType ConsoleApplication
+$result=Launch-WindowsApp @{app=$executable}
+Write-Output $result.processId
+`}`, 'utf8');
+      const started = Date.now();
+      const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', file], {
+        windowsHide: true, timeout: 10_000, maxBuffer: 32_768
+      });
+      const helperElapsed = Date.now() - started;
+      expect(Number(stdout.trim())).toBeGreaterThan(0);
+      expect(helperElapsed, 'helper remained coupled to launched application lifetime').toBeLessThan(2500);
+      const marker = path.join(directory, 'detached.txt');
+      let survived = false;
+      for (let attempt = 0; attempt < 80; attempt++) {
+        try { survived = (await readFile(marker, 'utf8')) === 'SURVIVED_HELPER_EXIT'; } catch {}
+        if (survived) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      expect(await readFile(marker, 'utf8')).toBe('SURVIVED_HELPER_EXIT');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }, 15_000);
 });

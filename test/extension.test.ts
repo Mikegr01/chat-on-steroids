@@ -97,7 +97,7 @@ describe('extension release metadata', () => {
   });
 
   /**
-   * The installed popup showed "Paired · port 8765" with a green dot and, underneath it,
+   * The installed popup showed "Paired · port 8775" with a green dot and, underneath it,
    * a six-digit code field and a Pair button — a page contradicting itself about the one
    * thing it exists to report. There is nothing to type any more, so the way to keep that
    * from coming back is for the markup to have no field to type into.
@@ -502,7 +502,7 @@ interface WorkerHarness {
 
 function response(status: number, data: unknown) {
   const body =
-    data && typeof data === 'object' && (data as Record<string, unknown>).app === 'chat-on-steroids'
+    data && typeof data === 'object' && (data as Record<string, unknown>).app === 'chat-on-steroids-custom'
       ? { bridge: BRIDGE_PROTOCOL, compatible: true, ...structuredClone(data as Record<string, unknown>) }
       : structuredClone(data);
   return {
@@ -807,7 +807,7 @@ describe('popup-only ChatGPT session transfer', () => {
     };
     const permissions = { contains: vi.fn(async () => permission) };
     const fetch = vi.fn(async (input: string, init?: Record<string, unknown>) => {
-      if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids', paired: true });
+      if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (input.endsWith('/cos-browser/sign-in')) {
         if (init?.method === 'POST') { requests.push(JSON.parse(String(init.body))); return response(200, { ok: true, imported: true }); }
         return response(200, { offer: { id, browser: 'brave' } });
@@ -816,7 +816,7 @@ describe('popup-only ChatGPT session transfer', () => {
     });
     const tab = { id: 41, url: 'https://chatgpt.com/', active: true };
     const tabsGet = vi.fn(async (_tabId: number): Promise<Record<string, unknown>> => tab);
-    const worker = loadWorker({ local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+    const worker = loadWorker({ local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(), cookies, permissions, fetch, action,
       tabsQuery: async () => [tab], tabsGet });
     return { worker, cookies, permissions, requests, tab, tabsGet };
@@ -826,9 +826,9 @@ describe('popup-only ChatGPT session transfer', () => {
       setBadgeBackgroundColor: vi.fn(async () => undefined) };
     const cookies = { getAllCookieStores: vi.fn(async () => []), getAll: vi.fn(async () => []) };
     let offer: unknown = { id, browser: 'edge' };
-    const fetch = vi.fn(async (input: string) => input.endsWith('/hello') ? response(200, { app: 'chat-on-steroids', paired: true })
+    const fetch = vi.fn(async (input: string) => input.endsWith('/hello') ? response(200, { app: 'chat-on-steroids-custom', paired: true })
       : input.endsWith('/cos-browser/sign-in') ? response(200, { offer }) : response(404, {}));
-    const worker = loadWorker({ local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+    const worker = loadWorker({ local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
       cookies, action, fetch });
     // ChatGPT's own answer about this tab's session, asked inside the tab.
     let signedIn = false;
@@ -915,13 +915,13 @@ describe('popup-only ChatGPT session transfer', () => {
   it('reports the browser presence with ChatGPT’s answer, asking once per page load', async () => {
     const presence: unknown[] = [];
     const fetch = vi.fn(async (input: string, init?: Record<string, unknown>) => {
-      if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids', paired: true });
+      if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (input.endsWith('/browser/presence')) { presence.push(JSON.parse(String(init?.body))); return response(200, { ok: true }); }
       if (input.endsWith('/cos-browser/sign-in')) return response(200, { offer: { id, browser: 'chrome' } });
       return response(404, {});
     });
     const page = { id: 41, windowId: 7, url: 'https://chatgpt.com/', status: 'complete' };
-    const worker = loadWorker({ local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+    const worker = loadWorker({ local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
       fetch, action: { openPopup: vi.fn(async () => undefined) }, tabsQuery: async () => [page], tabsGet: async () => page });
     worker.scriptingExecuteScript.mockImplementation(async () => [{ frameId: 0, result: true }]);
     const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
@@ -1067,8 +1067,8 @@ describe('accepted helper tab cleanup', () => {
     let complete!: (value: unknown) => void;
     const snapshot = vi.fn(() => new Promise(resolve => { complete = resolve; }));
     const call = vi.fn(async () => ({ ok: true }));
-    const context = vm.createContext({ token: 'fixture-token', disconnected: false, connectionEpoch: 1, port: 8765,
-      companionDiagnosticsFlight: null, discover: async () => ({ port: 8765 }), companionDiagnosticSnapshot: snapshot, call });
+    const context = vm.createContext({ token: 'fixture-token', disconnected: false, connectionEpoch: 1, port: 8775,
+      companionDiagnosticsFlight: null, discover: async () => ({ port: 8775 }), companionDiagnosticSnapshot: snapshot, call });
     const publish = vm.runInContext(`${source}\npublishCompanionDiagnostics`, context);
     const first = publish();
     const second = publish();
@@ -1094,7 +1094,7 @@ describe('accepted helper tab cleanup', () => {
       let url = `https://chatgpt.com/c/${helper}`;
       let pinned = outcome === 'pinned';
       const worker = loadWorker({
-        local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+        local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
         tabsGet: async () => ({ id: 1, url, pinned }),
         tabsSendMessage: async (_id, message) => {
           if (message.type !== 'clf-tab-close-check') return { ok: true };
@@ -1103,7 +1103,7 @@ describe('accepted helper tab cleanup', () => {
         },
         fetch: async (input) => {
           const route = new URL(input).pathname;
-          if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+          if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
           if (route === '/input/answer') {
             if (outcome === 'navigated') url = `https://chatgpt.com/c/${other}`;
             return response(200, { ok: outcome !== 'rejected' });
@@ -1124,14 +1124,14 @@ describe('accepted helper tab cleanup', () => {
 describe('browser identity', () => {
   it('sends one stable random browser id with every app request', async () => {
     const seen: string[] = [];
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const worker = loadWorker({
       local, session: new FakeStorageArea(),
       fetch: async (input, init = {}) => {
         const headers = (init.headers ?? {}) as Record<string, string>;
         if (new URL(input).pathname !== '/hello') seen.push(headers['x-extension-browser'] ?? '');
         return new URL(input).pathname === '/hello'
-          ? response(200, { app: 'chat-on-steroids', paired: true })
+          ? response(200, { app: 'chat-on-steroids-custom', paired: true })
           : response(200, { ok: true });
       }
     });
@@ -1148,10 +1148,10 @@ describe('ChatGPT\'s plugin list as proof', () => {
   it('passes core_plugin to the app only from the current ChatGPT document of its tab', async () => {
     const posted: unknown[] = [];
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
       fetch: async (input, init = {}) => {
         const route = new URL(input).pathname;
-        if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (route === '/core-plugin') posted.push(JSON.parse(String(init.body)));
         return response(200, { ok: true });
       }
@@ -1175,10 +1175,10 @@ describe('a chat deleted in ChatGPT', () => {
   it('passes conversation_deleted to the app only from a current ChatGPT document, with one exact chat id', async () => {
     const posted: unknown[] = [];
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
       fetch: async (input, init = {}) => {
         const route = new URL(input).pathname;
-        if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (route === '/conversation-deleted') posted.push(JSON.parse(String(init.body)));
         return response(200, { ok: true, ended: 0 });
       }
@@ -1198,12 +1198,12 @@ describe('this install\'s Core app for fresh tabs (#1086)', () => {
     // carries what the page needs to mention this install's own Core rather than another's.
     const names = { core: 'Chat On Steroids Core (Windows)', desktop: 'Chat On Steroids Desktop (Windows)', plugins: 'Chat On Steroids Plugins (Windows)' };
     const ownCoreApp = { appId: 'asdk_app_win2222', name: 'Chat On Steroids Core (Windows)' };
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token', connectorNames: names, ownCoreApp });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token', connectorNames: names, ownCoreApp });
     const worker = loadWorker({
       local, session: new FakeStorageArea(),
       fetch: async input => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/commands/redeem') return response(200, { command: { id: 'cmd-1', kind: 'resume', text: 'brief', agent: null } });
         return response(404, {});
       }
@@ -1214,11 +1214,11 @@ describe('this install\'s Core app for fresh tabs (#1086)', () => {
 
   it('remembers the Core app a page lists under this install\'s name, and forgets it when it goes missing', async () => {
     const names = { core: 'Chat On Steroids Core (Windows)', desktop: 'Chat On Steroids Desktop (Windows)', plugins: 'Chat On Steroids Plugins (Windows)' };
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token', connectorNames: names });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token', connectorNames: names });
     const worker = loadWorker({
       local, session: new FakeStorageArea(),
       fetch: async input => new URL(input).pathname === '/hello'
-        ? response(200, { app: 'chat-on-steroids', paired: true }) : response(200, { ok: true })
+        ? response(200, { app: 'chat-on-steroids-custom', paired: true }) : response(200, { ok: true })
     });
     await worker.registerTab(1);
     expect((await worker.send({ type: 'status' }, 1)).ownCoreApp).toBeNull();
@@ -1239,7 +1239,7 @@ describe('automatic Continue shares scheduled reload custody', () => {
     const actions: string[] = [];
     let consumed = false;
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session: new FakeStorageArea(),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session: new FakeStorageArea(),
       tabsGet: async () => ({ id: 1, url }),
       tabsSendMessage: async (_id, message) => {
         if (message.type === 'clf-recovery-reload-check') return { safe: outcome !== 'draft' };
@@ -1247,7 +1247,7 @@ describe('automatic Continue shares scheduled reload custody', () => {
       },
       fetch: async (address, init) => {
         const route = new URL(address).pathname;
-        if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (route === '/input/claim') {
           const body = JSON.parse(String(init?.body)); actions.push(body.recoveryAction);
           if (body.recoveryAction === 'stopped') {
@@ -1283,7 +1283,7 @@ describe('automatic Continue shares scheduled reload custody', () => {
  * too: this worker asks on the maintenance alarm it already runs, and reloads the exact tab.
  */
 describe('exact chat recovery from a fresh Chrome tab scan', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
   const CHAT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const OTHER = '11111111-2222-4333-8444-555555555555';
 
@@ -1305,7 +1305,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     let minted = 0;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') return response(200, { ok: true });
       if (url.pathname === '/status') {
         const repaired = url.searchParams.get('repaired');
@@ -1374,7 +1374,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       const trace: string[] = [];
       const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/repairs/claim') {
           trace.push('claim');
           if (mode === 'navigated-during-claim') navigated = true;
@@ -1436,7 +1436,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     const actions: string[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') {
         if (url.searchParams.has('repaired')) actions.push(url.searchParams.get('repairAction')!);
         if (handed) return response(200, { repairs: [] });
@@ -1463,7 +1463,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     const reports: string[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/repairs/claim') throw new Error('a held repair must not be claimed');
       if (url.pathname === '/status') {
         if (url.searchParams.has('repairHeld')) reports.push(`${url.searchParams.get('repairHeld')}:${url.searchParams.get('why')}`);
@@ -1495,7 +1495,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       let armed = false, handed = false, claimed = false, receipts = 0;
       const fetch = vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/repairs/claim') { claimed = true; return response(200, { allowed: true }); }
         if (url.pathname === '/status') {
           if (url.searchParams.has('repaired')) receipts++;
@@ -1537,7 +1537,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     const failures: (string | null)[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/repairs/claim') { claimed = true; return response(200, { allowed: true }); }
       if (url.pathname === '/status') {
         if (url.searchParams.has('repairFailed')) failures.push(url.searchParams.get('detail'));
@@ -1572,7 +1572,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       let armed = false, handed = false, claimed = false, repaired = 0, failed = 0;
       const fetch = vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/repairs/claim') { claimed = true; return response(200, { allowed: true }); }
         if (url.pathname === '/status') {
           if (url.searchParams.has('repaired')) repaired++;
@@ -1678,7 +1678,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     let minted = 0;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') return response(200, { ok: true });
       if (url.pathname === '/status') {
         const repaired = url.searchParams.get('repaired');
@@ -1715,7 +1715,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     let done = false;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') return response(200, { ok: true });
       if (url.pathname === '/status') {
         if (token && url.searchParams.get('repaired') === token) done = true;
@@ -1745,7 +1745,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
     let closed = false;
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed' && init.method === 'POST') {
         closed = true;
         return response(200, { ok: true });
@@ -1855,14 +1855,14 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
 });
 
 describe('active agent tab discard protection', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
   const CHAT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
   it('protects the exact live chat and restores only the tab policy it changed', async () => {
     let live = true;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') {
         return response(200, {
           ok: true,
@@ -1901,7 +1901,7 @@ describe('active agent tab discard protection', () => {
     const COMPACTED = 'cccccccc-dddd-4eee-8fff-000000000000';
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') {
         return response(200, {
           ok: true,
@@ -1941,7 +1941,7 @@ describe('active agent tab discard protection', () => {
     let live = true;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') {
         return response(200, {
           ok: true,
@@ -1976,7 +1976,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea(),
       fetch: vi.fn(async (input: string, init?: Record<string, unknown>) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') {
           posted.push(JSON.parse(String(init?.body || '{}')));
           return response(200, { ok: true, repairs: [] });
@@ -2010,7 +2010,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea(),
       fetch: vi.fn(async (input: string, init?: Record<string, unknown>) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') {
           posted.push(JSON.parse(String(init?.body || '{}')));
           const reveals = handed ? [] : [TARGET, 'not a chat id'];
@@ -2058,7 +2058,7 @@ describe('active agent tab discard protection', () => {
       local, session,
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') { const follow = handed ? undefined : TARGET; handed = true; return response(200, { ok: true, repairs: [], ...(follow ? { follow } : {}) }); }
         return response(404, {});
       }),
@@ -2091,7 +2091,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea({ chatBackgroundGroup: 50 }),
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') return response(200, { ok: true, repairs: [], backgroundPlacement: placement() });
         return response(404, {});
       }),
@@ -2183,7 +2183,7 @@ describe('active agent tab discard protection', () => {
         session: new FakeStorageArea({ chatBackgroundGroup: 50 }),
         fetch: vi.fn(async (input: string) => {
           const url = new URL(input);
-          if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+          if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
           if (url.pathname === '/status') {
             const placement = offered ? {} : { placement: { id: 'cmd-successor', homeConversationId: CHAT } };
             offered = true;
@@ -2220,7 +2220,7 @@ describe('active agent tab discard protection', () => {
         session: new FakeStorageArea({ chatBackgroundGroup: 50 }),
         fetch: vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
           const url = new URL(input);
-          if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+          if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
           if (url.pathname === '/status') return response(200, { ok: true, recoveryMonitoring: true, repairs: [], revival, backgroundPlacement: 'group' });
           if (url.pathname === '/commands/revivals/pending') {
             const body = JSON.parse(String(init.body || '{}'));
@@ -2276,7 +2276,7 @@ describe('active agent tab discard protection', () => {
       local, session: new FakeStorageArea(),
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') return response(200, { ok: true, repairs: [], ...(sent === undefined ? {} : { backgroundPlacement: sent }) });
         return response(404, {});
       })
@@ -2294,7 +2294,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea({ chatBackgroundWindow: BACKGROUND }),
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') return response(200, { ok: true, repairs: [], backgroundPlacement: 'group', follow: TARGET });
         return response(404, {});
       }),
@@ -2318,7 +2318,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea({ chatBackgroundWindow: BACKGROUND }),
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') {
           polls++;
           const follow = handed ? undefined : target;
@@ -2365,7 +2365,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea(),
       fetch: vi.fn(async (input: string, init?: Record<string, unknown>) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') {
           posted.push(JSON.parse(String(init?.body || '{}')));
           // Still pending on the next poll: the worker must not hand the same export out twice.
@@ -2403,7 +2403,7 @@ describe('active agent tab discard protection', () => {
       session: new FakeStorageArea(),
       fetch: vi.fn(async (input: string, init?: Record<string, unknown>) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/commands/step') { steps.push(JSON.parse(String(init?.body || '{}'))); return response(200, { ok: true }); }
         return response(200, { ok: true, repairs: [] });
       })
@@ -2423,7 +2423,7 @@ describe('active agent tab discard protection', () => {
       session,
       fetch: vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') {
           return response(200, { ok: true, repairs: [], inputs: [{ id: inputId }], inputOpeningIds: [inputId] });
         }
@@ -2480,14 +2480,14 @@ describe('app-owned retained tab pool', () => {
     'preserves the proven origin of a pruned tab close: %s', async scenario => {
       const conversationId = id(71);
       const tab = { id: 71, windowId: 7, url: `https://chatgpt.com/c/${conversationId}`, active: false };
-      const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+      const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
       const session = new FakeStorageArea();
       let exists = true, prune = true, closeOnline = !['retry-close', 'manual-after-reopen'].includes(scenario);
       const closes: Array<{ conversationId: string; manual: boolean }> = [];
       const options = { local, session,
         fetch: async (input: string, init: Record<string, unknown> = {}) => {
           const route = new URL(input).pathname;
-          if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+          if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
           if (route === '/closed') {
             closes.push(JSON.parse(String(init.body)));
             return response(closeOnline ? 200 : 503, {});
@@ -2549,9 +2549,9 @@ describe('app-owned retained tab pool', () => {
   async function budget(options: { safe?: (tab: number) => boolean; changed?: number; keep?: number; recent?: number; protectDuplicate?: boolean; reverseActivity?: boolean; retired?: boolean; idle?: boolean; ordinary?: number; pinned?: number } = {}) {
     const tabs = [1, 2, 3, 4, 5, 6].map(n => ({ id: n, windowId: n === 5 ? 9 : 7, url: `https://chatgpt.com/c/${id(n === 4 ? 3 : n)}`, active: n === 5, pinned: n === options.pinned, lastAccessed: n === options.recent ? Date.now() : 0 }));
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea({ tabDocuments: Object.fromEntries(tabs.map(tab => [tab.id, `doc-${tab.id}`])), tabEpochs: Object.fromEntries(tabs.map(tab => [tab.id, 0])) }),
-      fetch: async input => response(200, new URL(input).pathname === '/hello' ? { app: 'chat-on-steroids', paired: true } : {
+      fetch: async input => response(200, new URL(input).pathname === '/hello' ? { app: 'chat-on-steroids-custom', paired: true } : {
         ok: true, repairs: [], tabsToKeepOpen: options.keep ?? 2, retiredConversations: options.retired ? [id(2), id(5)] : [],
         workerConversations: [1, 2, 3, 5].filter(n => n !== options.ordinary).map(id), sleepingWorkerConversations: [2, 3, 5].map(id),
         conversationActivityAt: Object.fromEntries([1, 2, 3, 5].map(n => [id(n), (options.reverseActivity ? 10 - n : n) * 1000])),
@@ -2612,7 +2612,7 @@ describe('app-owned retained tab pool', () => {
 });
 
 describe('worker settings authority', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
   const CHAT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
   it('authorizes Stop through the real runtime dispatcher and rejects a retired document', async () => {
@@ -2621,7 +2621,7 @@ describe('worker settings authority', () => {
       tabsGet: async () => ({ id: 42, url: `https://chatgpt.com/c/${CHAT}` }),
       fetch: async input => {
         const route = new URL(input).pathname;
-        if (route === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (route === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         posted.push(route);
         return response(200, { ok: true, command: { type: 'stop', conversationId: CHAT, turnId: 'live-turn' } });
       }
@@ -2641,7 +2641,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/settings' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(409, { error: 'worker_compaction_disabled' });
@@ -2661,7 +2661,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { ok: true });
@@ -2692,7 +2692,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { ok: true });
@@ -2725,7 +2725,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { ok: true });
@@ -2754,7 +2754,7 @@ describe('worker settings authority', () => {
       : `https://chatgpt.com/g/g-p-abcdef1234567890abcdef1234567890/c/${CHAT}`;
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
-      if (new URL(input).pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (new URL(input).pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (new URL(input).pathname === '/compact') posted.push(JSON.parse(String(init.body)));
       return response(200, { ok: true });
     });
@@ -2804,7 +2804,7 @@ describe('worker settings authority', () => {
     let offered = false;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') {
         if (offered) return response(200, { ok: true, repairs: [] });
         offered = true;
@@ -2829,7 +2829,7 @@ describe('worker settings authority', () => {
   it('opens the replacement chat in the window of the chat it continues', async () => {
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         return response(200, { stored: true, commandId: 'cmd-handoff', placement: { id: 'cmd-handoff' } });
       }
@@ -2867,7 +2867,7 @@ describe('worker settings authority', () => {
     const acknowledgements: Array<Record<string, unknown>> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         return response(200, { stored: true, commandId: 'cmd-create-failed', placement: { id: 'cmd-create-failed' } });
       }
@@ -2906,7 +2906,7 @@ describe('worker settings authority', () => {
     const acknowledgements: Array<Record<string, unknown>> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         return response(200, { stored: true, commandId: 'cmd-created', placement: { id: 'cmd-created' } });
       }
@@ -2941,7 +2941,7 @@ describe('worker settings authority', () => {
     const acknowledgements: Array<Record<string, unknown>> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         return response(200, { stored: true, commandId: 'cmd-window-missing', placement: { id: 'cmd-window-missing' } });
       }
@@ -2980,7 +2980,7 @@ describe('worker settings authority', () => {
     let placementHandedOut = false;
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         placementHandedOut = true;
         return response(200, { stored: true, commandId: 'cmd-home-gone', placement: { id: 'cmd-home-gone' } });
@@ -3021,7 +3021,7 @@ describe('worker settings authority', () => {
   it('leaves a compaction reply that places nothing to the app’s own opener', async () => {
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         // What an automatic pickup or a restart-restored resume answers with: there is no page
         // in flight to hand the successor to, so the app opened it the way it always did.
@@ -3049,7 +3049,7 @@ describe('worker settings authority', () => {
   it('refuses a settings write that names a different conversation than the source tab owns', async () => {
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       return response(200, {});
     });
     const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch });
@@ -3093,7 +3093,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { allowed: true });
@@ -3119,7 +3119,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/compact' && init.method === 'POST') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { allowed: true });
@@ -3145,7 +3145,7 @@ describe('worker settings authority', () => {
 
   it.each(['conversation', 'pending-conversation', 'pending-foreign'])('refuses a replacement permit on a %s route', async state => {
     const fetch = vi.fn(async (input: string) => new URL(input).pathname === '/hello'
-      ? response(200, { app: 'chat-on-steroids', paired: true }) : response(200, { allowed: true }));
+      ? response(200, { app: 'chat-on-steroids-custom', paired: true }) : response(200, { allowed: true }));
     const home = 'https://chatgpt.com/?clf=cmd-successor';
     const chat = `https://chatgpt.com/c/${CHAT}`;
     const tab = { id: 48, url: state === 'conversation' ? chat : home,
@@ -3173,7 +3173,7 @@ describe('worker settings authority', () => {
     const posted: Record<string, unknown>[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/goal/objective') {
         posted.push(JSON.parse(String(init.body || '{}')));
         return response(200, { objective: 'build the sandbox', enabled: true, mode: 'loop' });
@@ -3211,7 +3211,7 @@ describe('worker settings authority', () => {
  * could not open — which is the only thing that runs while no ChatGPT page exists.
  */
 describe('extension command delivery', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
 
   it('redeems only the command id the page was opened for', async () => {
     const local = new FakeStorageArea(paired);
@@ -3219,7 +3219,7 @@ describe('extension command delivery', () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/redeem') {
         const body = JSON.parse(String(init.body));
         bodies.push(body);
@@ -3250,7 +3250,7 @@ describe('extension command delivery', () => {
     const session = new FakeStorageArea({ settled: ['cmd-done'] });
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       return response(200, { command: { id: 'cmd-done', text: 'again?' } });
     });
     const worker = loadWorker({ local, session, fetch });
@@ -3277,7 +3277,7 @@ describe('extension command delivery', () => {
     const session = new FakeStorageArea();
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       return response(404, {});
     });
     const worker = loadWorker({ local, session, fetch });
@@ -3326,7 +3326,7 @@ describe('extension command delivery', () => {
       const chat = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
       const fetch = vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') return response(200, { ok: true, repairs: [], commandIds: [] });
         return response(404, {});
       });
@@ -3362,7 +3362,7 @@ describe('extension command delivery', () => {
       let commandIds: string[] | undefined = scenario === 'unknown-policy' ? undefined : ['cmd-handoff'];
       const fetch = vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (url.pathname === '/status') return response(200, { ok: true, repairs: [], commandIds });
         return response(404, {});
       });
@@ -3444,7 +3444,7 @@ describe('extension command delivery', () => {
     const session = new FakeStorageArea();
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       return response(404, {});
     });
     const worker = loadWorker({ local, session, fetch });
@@ -3458,14 +3458,14 @@ describe('extension command delivery', () => {
   });
 
   it('provisions itself silently on the first call and retries with the new token', async () => {
-    const local = new FakeStorageArea({ port: 8765 });
+    const local = new FakeStorageArea({ port: 8775 });
     const session = new FakeStorageArea();
     const seen: Array<{ path: string; auth: unknown }> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
       const headers = (init.headers ?? {}) as Record<string, string>;
       seen.push({ path: url.pathname, auth: headers.authorization });
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: false });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: false });
       if (url.pathname === '/pair') return response(200, { token: 'fresh-token' });
       if (url.pathname === '/commands/redeem') return response(200, { command: null });
       return response(404, {});
@@ -3492,7 +3492,7 @@ describe('extension command delivery', () => {
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
       paths.push(url.pathname);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', bridge: 14, paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', bridge: 14, paired: true });
       if (url.pathname === '/pair') return response(200, { token: 'fresh-start-token' });
       return response(200, {});
     });
@@ -3502,11 +3502,11 @@ describe('extension command delivery', () => {
   });
 
   it('does not pair on its own after the user disconnected it', async () => {
-    const local = new FakeStorageArea({ port: 8765, disconnected: true });
+    const local = new FakeStorageArea({ port: 8775, disconnected: true });
     const session = new FakeStorageArea();
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', bridge: 14, paired: false });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', bridge: 14, paired: false });
       if (url.pathname === '/pair') return response(200, { token: 'unwanted-token' });
       return response(200, {});
     });
@@ -3517,13 +3517,13 @@ describe('extension command delivery', () => {
   });
 
   it('re-provisions once when the app no longer recognises the stored token', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'stale-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'stale-token' });
     const session = new FakeStorageArea();
     const tokens: Array<unknown> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
       const headers = (init.headers ?? {}) as Record<string, string>;
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/pair') return response(200, { token: 'second-token' });
       if (url.pathname === '/commands/redeem') {
         tokens.push(headers.authorization);
@@ -3553,7 +3553,7 @@ describe('extension command delivery', () => {
  * that document instead.
  */
 describe('extension revival delivery', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
   const CHAT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
   const PRIME = '11111111-2222-4333-8444-555555555555';
   const revival = { id: 'cmd-wake', conversationId: CHAT };
@@ -3561,7 +3561,7 @@ describe('extension revival delivery', () => {
   const app = (route: 'status' | 'activity' = 'status') =>
     vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === `/${route}`) {
         return response(200, { ok: true, recoveryMonitoring: true, repairs: [], revival });
       }
@@ -3612,7 +3612,7 @@ describe('extension revival delivery', () => {
     const second = { id: 'cmd-wake-2', conversationId: OTHER_CHAT };
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') return response(200, { ok: true, recoveryMonitoring: true, repairs: [], revival, revivals: [revival, second] });
       if (url.pathname === '/commands/revivals/pending') {
         const body = JSON.parse(String(init.body || '{}'));
@@ -3811,7 +3811,7 @@ describe('extension revival delivery', () => {
     });
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/revivals/pending') return response(200, { pending: [] });
       return response(404, {});
     });
@@ -3828,7 +3828,7 @@ describe('extension revival delivery', () => {
     const local = new FakeStorageArea({ ...paired, deferredRevivals: [marker] });
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/revivals/pending') return response(503, { error: 'bridge_recovering' });
       return response(404, {});
     });
@@ -3861,7 +3861,7 @@ describe('extension observation journal', () => {
   it.each([false, true])('retains a slow durable event batch beyond ten seconds, including a split retry: %s', async split => {
     vi.useFakeTimers();
     const chat = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const signals: AbortSignal[] = [];
     const posted: Array<{ events: Array<{ text: string }> }> = [];
@@ -3869,7 +3869,7 @@ describe('extension observation journal', () => {
     let delayed = false;
     const worker = loadWorker({ local, session, fetch: async (input, init = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname !== '/events') return response(404, {});
       const batch = JSON.parse(String(init.body));
       posted.push(batch);
@@ -3914,13 +3914,13 @@ describe('extension observation journal', () => {
   it('keeps an event batch durable when its extended deadline expires and drains it on a later successful attempt', async () => {
     vi.useFakeTimers();
     const chat = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const signals: AbortSignal[] = [];
     let healthy = false;
     const worker = loadWorker({ local, session, fetch: async (input, init = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname !== '/events') return response(404, {});
       if (healthy) return response(200, { stored: 1 });
       const signal = init.signal as AbortSignal;
@@ -3952,7 +3952,7 @@ describe('extension observation journal', () => {
   it('delivers another chat and its Goal while a slow chat holds one slot, without overlapping same-chat batches', async () => {
     const a = '11111111-2222-3333-4444-555555555555';
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let releaseA!: () => void;
     let releaseB!: () => void;
@@ -3965,7 +3965,7 @@ describe('extension observation journal', () => {
     let drafts = 0;
     const worker = loadWorker({ local, session, fetch: async (input, init = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') {
         const batch = JSON.parse(String(init.body));
         posted.push(batch);
@@ -4011,7 +4011,7 @@ describe('extension observation journal', () => {
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const c = '33333333-4444-5555-6666-777777777777';
     const d = '44444444-5555-6666-7777-888888888888';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -4019,7 +4019,7 @@ describe('extension observation journal', () => {
     const posted: string[] = [];
     const worker = loadWorker({ local, session, fetch: async (input, init = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') return healthy ? response(200, { ok: true }) : response(503, {});
       if (url.pathname === '/events') {
         const id = JSON.parse(String(init.body)).conversationId;
@@ -4053,14 +4053,14 @@ describe('extension observation journal', () => {
     const a = '11111111-2222-3333-4444-555555555555';
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const c = '33333333-4444-5555-6666-777777777777';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const posted: string[] = [];
     const worker = loadWorker({ local, session, fetch: async (input, init = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') {
         const id = JSON.parse(String(init.body)).conversationId;
         posted.push(id);
@@ -4080,11 +4080,11 @@ describe('extension observation journal', () => {
   });
 
   it('does not permanently settle a worker command merely because its bootstrap message was sent', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') return response(200, { ok: true });
       return response(404, {});
     });
@@ -4097,11 +4097,11 @@ describe('extension observation journal', () => {
   });
 
   it('preserves the observation journal on a 426 protocol mismatch', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return response(426, { error: 'upgrade_required' });
       return response(404, {});
     });
@@ -4127,12 +4127,12 @@ describe('extension observation journal', () => {
   });
 
   it('keeps one retry alarm while work remains instead of resetting it on every failure', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let healthy = false;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return healthy ? response(200, { ok: true }) : response(503, { error: 'retry' });
       if (url.pathname === '/closed') return response(200, { ok: true });
       if (url.pathname === '/status') return response(200, { ok: true, repairs: [], recoveryMonitoring: false });
@@ -4160,11 +4160,11 @@ describe('extension observation journal', () => {
   });
 
   it('durably retries a lost command ACK after the service worker restarts', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const firstFetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') return response(503, { error: 'temporarily_unavailable' });
       return response(404, {});
     });
@@ -4187,7 +4187,7 @@ describe('extension observation journal', () => {
     const bodies: Array<Record<string, unknown>> = [];
     const secondFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') {
         bodies.push(JSON.parse(String(init.body)));
         return response(200, { ok: true, committed: true });
@@ -4207,11 +4207,11 @@ describe('extension observation journal', () => {
   });
 
   it('durably keeps a failed command diagnostic detail through a service worker restart', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const firstFetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') return response(503, { error: 'temporarily_unavailable' });
       return response(404, {});
     });
@@ -4237,7 +4237,7 @@ describe('extension observation journal', () => {
     const bodies: Array<Record<string, unknown>> = [];
     const secondFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') {
         bodies.push(JSON.parse(String(init.body)));
         return response(200, { ok: true, committed: false, outcome: 'terminal-failure' });
@@ -4261,13 +4261,13 @@ describe('extension observation journal', () => {
   });
 
   it('keeps a fresh command page journal behind its pending ACK after the route gets an id', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let ackHealthy = false;
     const postedEvents: Array<Record<string, unknown>> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/commands/ack') {
         return ackHealthy ? response(200, { ok: true, committed: true }) : response(503, { error: 'retry' });
       }
@@ -4458,12 +4458,12 @@ describe('extension observation journal', () => {
   });
 
   it('drains each conversation separately so navigation cannot file chat A observations into chat B', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const posted: Array<{ conversationId: string; events: Array<{ text?: string }> }> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') {
         posted.push(JSON.parse(String(init.body)));
         return response(200, { sessionId: 'session', stored: 1 });
@@ -4492,13 +4492,13 @@ describe('extension observation journal', () => {
 
   it('delivers the triggering conversation journal before asking the app for a Goal draft', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let acceptEvents = false;
     const order: string[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') {
         order.push('/events');
         return acceptEvents
@@ -4553,12 +4553,12 @@ describe('extension observation journal', () => {
 
   it('carries the browser tab identity through Goal activity, draft and acknowledgement', async () => {
     const conversationId = '22222222-3333-4444-5555-666666666666';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const seen: Array<{ route: string; client: string | null }> = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/activity') {
         seen.push({ route: url.pathname, client: url.searchParams.get('goalClient') });
         return response(200, { sessionId: 'session', entries: [], stream: [], nextSince: 0 });
@@ -4592,7 +4592,7 @@ describe('extension observation journal', () => {
     const seen: Array<string | null> = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/activity') {
         seen.push(url.searchParams.get('fiber'));
         return response(200, { sessionId: 'session', entries: [], stream: [], nextSince: 0 });
@@ -4600,7 +4600,7 @@ describe('extension observation journal', () => {
       return response(404, {});
     });
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(),
       fetch
     });
@@ -4617,7 +4617,7 @@ describe('extension observation journal', () => {
 
   it('selects only the exact owned Goal tab without activating Chrome or opening a duplicate', async () => {
     const conversationId = '22222222-3333-4444-5555-666666666666';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const worker = loadWorker({ local, session });
 
@@ -4645,12 +4645,12 @@ describe('extension observation journal', () => {
 
   it('refuses a Goal draft while the triggering transcript is still not deliverable', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     let drafts = 0;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return response(503, { error: 'temporarily_unavailable' });
       if (url.pathname === '/goal/draft') {
         drafts += 1;
@@ -4698,12 +4698,12 @@ describe('extension observation journal', () => {
   });
 
   it('closes a conversation only when its final browser tab is actually gone', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return response(200, { sessionId: 'session', stored: 1 });
       if (url.pathname === '/closed') {
         closed.push(JSON.parse(String(init.body)).conversationId);
@@ -4742,7 +4742,7 @@ describe('extension observation journal', () => {
     const detailBodies: unknown[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const path = new URL(input).pathname;
-      if (path === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (path === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (path === '/activity/detail') {
         detailBodies.push(JSON.parse(String(init.body)));
         return response(200, { ok: true, conversationId, callId: 'call-1', detailRevision: 17 });
@@ -4750,7 +4750,7 @@ describe('extension observation journal', () => {
       return response(200, {});
     });
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(),
       fetch,
       tabsGet: async (id) => ({ id, url: tabUrl, status: tabStatus, ...(pendingUrl ? { pendingUrl } : {}) })
@@ -4786,7 +4786,7 @@ describe('extension observation journal', () => {
     let tabUrl = `https://chatgpt.com/c/${conversationId}`;
     const fetch = vi.fn(async (input: string) => {
       const path = new URL(input).pathname;
-      if (path === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (path === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (path === '/activity/detail') {
         tabUrl = `https://chatgpt.com/c/${other}`;
         return response(200, { ok: true, conversationId, callId: 'call-1', detailRevision: 17 });
@@ -4794,7 +4794,7 @@ describe('extension observation journal', () => {
       return response(200, {});
     });
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(), fetch,
       tabsGet: async (id) => ({ id, url: tabUrl, status: 'complete' })
     });
@@ -4812,7 +4812,7 @@ describe('extension observation journal', () => {
       const closed: string[] = [];
       let completed = false;
       const worker = loadWorker({
-        local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session,
+        local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session,
         tabsGet: async () => ({ id: 12, status: completed && mode !== 'still-loading' ? 'complete' : 'loading',
           ...(mode === 'same-chat' ? { url: `https://chatgpt.com/c/${conversationId}` } : {}),
           ...(mode === 'pending-chat' ? { pendingUrl: `https://chatgpt.com/c/${conversationId}` } : {}) }),
@@ -4822,7 +4822,7 @@ describe('extension observation journal', () => {
         },
         fetch: async (input, init = {}) => {
           const path = new URL(input).pathname;
-          if (path === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+          if (path === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
           if (path === '/closed') closed.push(JSON.parse(String(init.body)).conversationId);
           return response(200, {});
         }
@@ -4844,12 +4844,12 @@ describe('extension observation journal', () => {
     const closed: string[] = [];
     let finishQuery!: (tabs: []) => void;
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session,
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session,
       tabsGet: async () => ({ id: 12, status: 'complete' }),
       tabsQuery: () => new Promise((resolve) => { finishQuery = resolve; }),
       fetch: async (input, init = {}) => {
         const path = new URL(input).pathname;
-        if (path === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (path === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (path === '/closed') closed.push(JSON.parse(String(init.body)).conversationId);
         return response(200, {});
       }
@@ -4870,12 +4870,12 @@ describe('extension observation journal', () => {
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }), session,
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }), session,
       tabsGet: async () => ({ id: 12, status: 'loading',
         url: `https://chatgpt.com/c/${conversationId}`, pendingUrl: 'https://example.com/away' }),
       fetch: async (input, init = {}) => {
         const path = new URL(input).pathname;
-        if (path === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (path === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (path === '/closed') closed.push(JSON.parse(String(init.body)).conversationId);
         return response(200, {});
       }
@@ -4887,12 +4887,12 @@ describe('extension observation journal', () => {
   });
 
   it('closes a conversation when its tab survives but navigates away from ChatGPT', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return response(200, { sessionId: 'session', stored: 1 });
       if (url.pathname === '/closed') {
         closed.push(JSON.parse(String(init.body)).conversationId);
@@ -4924,12 +4924,12 @@ describe('extension observation journal', () => {
    * not the chat's own is the chat leaving; its own URL is the ambiguous reload it always was.
    */
   it('closes a conversation when its tab does a full navigation to another ChatGPT URL', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') return response(200, { sessionId: 'session', stored: 1 });
       if (url.pathname === '/closed') {
         closed.push(JSON.parse(String(init.body)).conversationId);
@@ -4953,7 +4953,7 @@ describe('extension observation journal', () => {
 
   it('lets terminal navigation beat a delayed message from the dying document', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea({ tabConversations: { '12': conversationId } });
     // Force both handlers through the same cold-worker load window. The browser event is
     // delivered first; stale content IPC arrives while storage is still resolving.
@@ -4961,7 +4961,7 @@ describe('extension observation journal', () => {
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') {
         closed.push(JSON.parse(String(init.body)).conversationId);
         return response(200, { ok: true });
@@ -4986,12 +4986,12 @@ describe('extension observation journal', () => {
   it('rejects the old document after an external round trip and lets only the new document own the tab', async () => {
     const a = '11111111-2222-3333-4444-555555555555';
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') {
         closed.push(JSON.parse(String(init.body)).conversationId);
         return response(200, { ok: true });
@@ -5018,13 +5018,13 @@ describe('extension observation journal', () => {
   it('tombstones a direct ChatGPT document navigation before the replacement document registers', async () => {
     const a = '11111111-2222-3333-4444-555555555555';
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const calls: string[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
       calls.push(url.pathname);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/activity') return response(200, { sessionId: 'session', stream: [] });
       return response(200, { ok: true });
     });
@@ -5057,14 +5057,14 @@ describe('extension observation journal', () => {
   it('does not let the dying document revoke its terminal lease while Chrome is still navigating', async () => {
     const a = '11111111-2222-3333-4444-555555555555';
     const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const calls: string[] = [];
     const target = `https://chatgpt.com/c/${b}`;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
       calls.push(url.pathname);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/activity') return response(200, { sessionId: 'session', stream: [] });
       return response(200, { ok: true });
     });
@@ -5091,13 +5091,13 @@ describe('extension observation journal', () => {
 
   it('reopens a speculative terminal lease once Chrome proves the original document is settled', async () => {
     const a = '11111111-2222-3333-4444-555555555555';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const calls: string[] = [];
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
       calls.push(url.pathname);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/activity') return response(200, { sessionId: 'session', stream: [] });
       return response(200, { ok: true });
     });
@@ -5122,12 +5122,12 @@ describe('extension observation journal', () => {
 
   it('blocks the dying reload document without closing the same conversation', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const closed: string[] = [];
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/closed') closed.push(JSON.parse(String(init.body)).conversationId);
       return response(200, { ok: true });
     });
@@ -5269,13 +5269,13 @@ describe('extension observation journal', () => {
   });
 
   it('replaces a single unhalvable 413 observation with an explicit durable gap', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const session = new FakeStorageArea();
     const received: any[] = [];
     let rejected = false;
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/events') {
         const body = JSON.parse(String(init.body));
         if (!rejected) {
@@ -5343,7 +5343,7 @@ describe('extension connection', () => {
       tokens: 0,
       async fetch(input: string) {
         state.calls.push(input);
-        if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids', paired: true });
+        if (input.endsWith('/hello')) return response(200, { app: 'chat-on-steroids-custom', paired: true });
         if (input.endsWith('/pair')) {
           state.tokens++;
           return response(200, { token: `token-${state.tokens}` });
@@ -5382,7 +5382,7 @@ describe('extension connection', () => {
     let body: any = null;
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/correlations') {
         body = JSON.parse(String(init.body));
         return response(200, {
@@ -5397,7 +5397,7 @@ describe('extension connection', () => {
       return response(404, {});
     });
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(),
       fetch,
       tabsGet: async (id) => ({ id, url: `https://chatgpt.com/c/${conversationId}` })
@@ -5432,11 +5432,11 @@ describe('extension connection', () => {
       const pathname = new URL(input).pathname;
       requested.push(pathname);
       return pathname === '/hello'
-        ? response(200, { app: 'chat-on-steroids', paired: true })
+        ? response(200, { app: 'chat-on-steroids-custom', paired: true })
         : response(200, { ok: true });
     });
     const worker = loadWorker({
-      local: new FakeStorageArea({ port: 8765, token: 'paired-token' }),
+      local: new FakeStorageArea({ port: 8775, token: 'paired-token' }),
       session: new FakeStorageArea(),
       fetch,
       tabsGet: async (id) => ({ id, url: `https://chatgpt.com/c/${otherConversationId}` })
@@ -5453,7 +5453,7 @@ describe('extension connection', () => {
 
   it('does not re-ask where the app is before every single request', async () => {
     const server = app();
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const worker = loadWorker({ local, session: new FakeStorageArea(), fetch: server.fetch });
 
     for (let n = 0; n < 5; n++) {
@@ -5494,7 +5494,7 @@ describe('extension connection', () => {
     let pairCalls = 0;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/pair') {
         pairCalls++;
         return response(200, { token: 'should-never-be-minted' });
@@ -5502,7 +5502,7 @@ describe('extension connection', () => {
       if (url.pathname === '/activity') return response(401, { error: 'browser_disconnected' });
       return response(404, {});
     });
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const worker = loadWorker({ local, session: new FakeStorageArea(), fetch });
 
     const activity = await worker.send({
@@ -5526,7 +5526,7 @@ describe('extension connection', () => {
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
       if (url.pathname === '/hello') {
-        return response(200, { app: 'chat-on-steroids', paired: false, disconnected: true });
+        return response(200, { app: 'chat-on-steroids-custom', paired: false, disconnected: true });
       }
       if (url.pathname === '/pair') {
         pairCalls++;
@@ -5534,7 +5534,7 @@ describe('extension connection', () => {
       }
       return response(404, {});
     });
-    const local = new FakeStorageArea({ port: 8765, token: 'old-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'old-token' });
     const worker = loadWorker({ local, session: new FakeStorageArea(), fetch });
 
     expect(await worker.send({ type: 'status' })).toMatchObject({
@@ -5558,7 +5558,7 @@ describe('extension connection', () => {
     });
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: false });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: false });
       if (url.pathname === '/pair') {
         pairStarted();
         await pairGate;
@@ -5617,7 +5617,7 @@ describe('extension connection', () => {
   });
 
   it('forces an immediate overwrite in known and newly discovered ChatGPT tabs', async () => {
-    const local = new FakeStorageArea({ port: 8765, token: 'paired-token' });
+    const local = new FakeStorageArea({ port: 8775, token: 'paired-token' });
     const worker = loadWorker({ local, session: new FakeStorageArea(), fetch: app().fetch });
     await worker.send({ type: 'bind', conversationId: '11111111-2222-3333-4444-555555555555' }, 11);
     await worker.send({ type: 'bind', conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 12);
@@ -5677,14 +5677,14 @@ describe('the overlay stylesheet', () => {
  * tests pin — the deadline, and what a deadline is allowed to mean.
  */
 describe('the goal opening, which waits on a model', () => {
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
 
   /** A worker whose `/goal/open` never answers on its own, and the signal it was handed. */
   function hangingApp() {
     const seen: { signal: AbortSignal | null } = { signal: null };
     const fetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/goal/open') {
         const signal = init.signal as AbortSignal;
         seen.signal = signal;
@@ -5920,7 +5920,7 @@ describe('this install\'s connector names', () => {
   const windows = {
     core: 'Chat On Steroids Core (Windows)', desktop: 'Chat On Steroids Desktop (Windows)', plugins: 'Chat On Steroids Plugins (Windows)'
   };
-  const paired = { port: 8765, token: 'paired-token' };
+  const paired = { port: 8775, token: 'paired-token' };
   it('keeps the app\'s proven connector apps across a worker restart, drops malformed ones and hands them to pages', async () => {
     // A connector renamed in ChatGPT keeps its app id (2026-10-11). Pages recognize this install's
     // calls by the ids the app proved from its own served requests.
@@ -5930,7 +5930,7 @@ describe('this install\'s connector names', () => {
       desktop: [], plugins: [{ appId: 'asdk_app_p1', linkId: 'bogus', name: 'x'.repeat(80) }] };
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') return response(200, { connectorNames: windows, connectorApps: apps });
       return response(200, {});
     });
@@ -5941,7 +5941,7 @@ describe('this install\'s connector names', () => {
     expect((await worker.send({ type: 'status' }) as any).connectorApps).toEqual(expected);
     expect(local.data.connectorApps).toEqual(expected);
     const quiet = vi.fn(async (input: string) => new URL(input).pathname === '/hello'
-      ? response(200, { app: 'chat-on-steroids', paired: true }) : response(200, {}));
+      ? response(200, { app: 'chat-on-steroids-custom', paired: true }) : response(200, {}));
     const restarted = loadWorker({ local, session, fetch: quiet });
     expect((await restarted.send({ type: 'status' }) as any).connectorApps).toEqual(expected);
   });
@@ -5954,7 +5954,7 @@ describe('this install\'s connector names', () => {
     let names: unknown = windows;
     const fetch = vi.fn(async (input: string) => {
       const url = new URL(input);
-      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids-custom', paired: true });
       if (url.pathname === '/status') return response(200, { connectorNames: names });
       return response(200, {});
     });
@@ -5965,7 +5965,7 @@ describe('this install\'s connector names', () => {
     expect(local.data.connectorNames).toEqual(windows);
 
     const quiet = vi.fn(async (input: string) => new URL(input).pathname === '/hello'
-      ? response(200, { app: 'chat-on-steroids', paired: true }) : response(200, {}));
+      ? response(200, { app: 'chat-on-steroids-custom', paired: true }) : response(200, {}));
     const restarted = loadWorker({ local, session, fetch: quiet });
     expect((await restarted.send({ type: 'status' }) as any).connectorNames).toEqual(windows);
 

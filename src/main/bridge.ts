@@ -3,6 +3,7 @@ import { cosSignInTransfer, SignInTransferError } from './cos-browser/sign-in-tr
 import { externalBrowserProof, noteExternalInstalled, noteExternalSignedIn, resetBrowserProofForTests } from './browser-proof.js';
 import { notePluginInstalled, notePluginMissing } from './connector-proof.js';
 import { connectorNames } from '../shared/connector-names.js';
+import { CUSTOM_APP_IDENTITY } from '../shared/app-identity.js';
 import { connectorApps, conversationCreatedAt, noteAppSightings, type AppSighting } from './connector-identity.js';
 import { messageReaction } from '../shared/message-reaction.js';
 import { browserControl } from './browser-control.js';
@@ -2222,7 +2223,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res,
       200,
       {
-        app: 'chat-on-steroids',
+        app: CUSTOM_APP_IDENTITY.bridgeAppId,
         version: APP_VERSION,
         bridge: BRIDGE_PROTOCOL,
         // Unknown, not incompatible, for a caller that states no protocol (curl in a bug report).
@@ -5517,7 +5518,7 @@ async function startBridgeOnce(epoch: number, prepared?: PreparedBridge): Promis
   // A stopped bridge is not a sleeping computer: the first tick of a new timer measures no gap.
   lastRecoverySweepTickAt = 0;
   staleSwarmTimer = setInterval(() => {
-    noteRecoverySweepTick(Date.now());
+    maintenanceRecoverySweepTick();
     void runStaleSwarmSweep().catch((err: Error) => logWarn(`stale swarm sweep failed: ${err.message}`));
     void retryUnclaimedBrowserInputs().catch((err: Error) => logWarn(`unclaimed browser input recovery failed: ${err.message}`));
   }, STALE_SWARM_SWEEP_MS);
@@ -6697,6 +6698,21 @@ export function noteRecoverySweepTick(now: number): boolean {
   }
   logInfo(`bridge: nothing ran for ${Math.round(gap / 60_000)} minute(s) (the computer slept, or this app was paused) — ${held} working chat(s) get ${WAKE_GRACE_MS / 1000} seconds to report before any recovery`);
   return true;
+}
+
+/**
+ * The process-owned wall clock is captured before any test-local Date.now spy can replace it.
+ * Sleep/wake detection belongs to the bridge process, not to a synthetic conversation clock.
+ */
+const maintenanceWallClockNow = Date.now.bind(Date);
+
+/** The process-owned maintenance clock, exposed only so synthetic-time integration tests can fence it. */
+function maintenanceRecoverySweepTick(): boolean {
+  return noteRecoverySweepTick(maintenanceWallClockNow());
+}
+
+export function maintenanceRecoverySweepTickForTests(): boolean {
+  return maintenanceRecoverySweepTick();
 }
 
 /** Chats reloaded by the app whose page has given no sign of life since. */

@@ -380,7 +380,7 @@ beforeAll(async () => {
   };
   await saveConfig(suiteConfig);
   const port = await startBridge();
-  expect(port, 'no loopback port in 8765-8769 was free').not.toBeNull();
+  expect(port, 'no loopback port in 8775-8779 was free').not.toBeNull();
   base = `http://127.0.0.1:${port}`;
 });
 
@@ -733,13 +733,13 @@ describe('who is allowed to talk to it', () => {
   // The suite binds ephemeral ports so it can never collide with the installed app, so the
   // shipped range has to be asserted directly or a typo in it would ship unnoticed.
   it('ships the fixed candidate range the extension scans', () => {
-    expect(DEFAULT_PORTS).toEqual([8765, 8766, 8767, 8768, 8769, 18765, 18766, 18767, 18768, 18769, 38765, 38766, 38767, 38768, 38769]);
+    expect(DEFAULT_PORTS).toEqual([8775, 8776, 8777, 8778, 8779, 18775, 18776, 18777, 18778, 18779, 38775, 38776, 38777, 38778, 38779]);
   });
 
   it('identifies itself to an extension without any credential', async () => {
     const reply = await request('GET', '/hello', { auth: null });
     expect(reply.status).toBe(200);
-    expect(reply.body.app).toBe('chat-on-steroids');
+    expect(reply.body.app).toBe('chat-on-steroids-custom');
     // Against the constant, not a literal: what matters is that the handshake reports the
     // build's own version, and a hard-coded number here only ever fails on release day.
     expect(reply.body.version).toBe(APP_VERSION);
@@ -15782,7 +15782,7 @@ it('preserves pending commands and durable ACK receipts across a port switch', a
   try {
     const { updateConfig } = await import('../src/main/config.js');
     const { publishBridgePortChange } = await import('../src/main/bridge.js');
-    await updateConfig(config => ({ ...config, ui: { ...config.ui, browserBridgePort: 8767 } }), undefined, publishBridgePortChange);
+    await updateConfig(config => ({ ...config, ui: { ...config.ui, browserBridgePort: 8777 } }), undefined, publishBridgePortChange);
     base = `http://127.0.0.1:${bridgePort()}`;
     expect(pendingCommands()).toEqual(pending);
     expect(await readDurable('bridge-commands')).toEqual(before);

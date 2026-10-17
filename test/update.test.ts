@@ -58,7 +58,7 @@ const {
 } = await import('../src/main/update.js');
 
 const NEXT = '99.0.0';
-const WINDOWS_ASSET = `Chat-On-Steroids-Setup-${process.arch}.exe`;
+const WINDOWS_ASSET = `Chat-On-Steroids-Custom-Setup-${process.arch}.exe`;
 const APPIMAGE_ASSET = `Chat-On-Steroids-Linux-${process.arch}.AppImage`;
 
 const sha256 = (body: string): string => createHash('sha256').update(body).digest('hex');
@@ -159,7 +159,7 @@ describe('the file Get update opens for an installation that cannot update itsel
 
 describe('which installations update themselves', () => {
   it('takes the Windows installer and the Linux AppImage, and nothing else', () => {
-    expect(stagedArtifact('win32', 'x64')).toMatchObject({ name: 'Chat-On-Steroids-Setup-x64.exe', kind: 'installer' });
+    expect(stagedArtifact('win32', 'x64')).toMatchObject({ name: 'Chat-On-Steroids-Custom-Setup-x64.exe', kind: 'installer' });
     expect(stagedArtifact('linux', 'arm64', '/opt/cos.AppImage')).toMatchObject({
       name: 'Chat-On-Steroids-Linux-arm64.AppImage',
       kind: 'appimage',

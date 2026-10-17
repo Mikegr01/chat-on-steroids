@@ -3049,6 +3049,45 @@ it('retires an opening send whose receipt never arrives after six hours, and not
   } finally { clock.mockRestore(); }
 });
 
+it('keeps maintenance wake detection on process wall time while recovery advances synthetic Date.now', async () => {
+  const bridge = await import('../src/main/bridge.js');
+  let now = Date.now();
+  const startedAt = now;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    await saveConfig(defaultConfig());
+    const conversationId = randomUUID();
+    await createSession({ title: 'Maintenance wall-clock isolation', conversationId });
+    const turnId = randomUUID();
+    await post('/events', { conversationId, events: [
+      { kind: 'model_selection', model: 'gpt-5.6-pro', reasoningEffort: 'high', time: now },
+      { kind: 'user_message', messageId: randomUUID(), text: 'Finish the requested task', time: now },
+      { kind: 'turn_start', turnId, time: now }
+    ] });
+    await attributedMcp(conversationId);
+    // Prime the real maintenance owner's wall-clock baseline before the synthetic jump.
+    expect(bridge.maintenanceRecoverySweepTickForTests()).toBe(false);
+    now += 30_000;
+    await post('/events', { conversationId, events: [
+      { kind: 'turn_end', turnId, outcome: 'failed', reason: 'thinking_failed', time: now }
+    ] });
+
+    let releaseMaintenance!: () => void;
+    const maintenanceGate = new Promise<void>(resolve => { releaseMaintenance = resolve; });
+    const maintenance = (async () => {
+      await maintenanceGate;
+      return bridge.maintenanceRecoverySweepTickForTests();
+    })();
+    now = startedAt + 5 * 60_000;
+    releaseMaintenance();
+    expect(await maintenance).toBe(false);
+
+    await bridge.sweepStaleSwarm(now);
+    expect((await post('/status', { openConversations: [conversationId] })).body.repairs
+      .find((repair: any) => repair.conversationId === conversationId)?.reason).toBe('silence');
+  } finally { clock.mockRestore(); }
+});
+
 describe('this install\'s connector names', () => {
   it('reach the extension with every status reply, and follow a changed suffix at once', async () => {
     await saveConfig(defaultConfig());

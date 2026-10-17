@@ -88,11 +88,11 @@ describe('portable browser-backed feature parity', () => {
     expect(manifest.host_permissions).toEqual(
       expect.arrayContaining([
         'https://chatgpt.com/*',
-        'http://127.0.0.1:8765/*',
-        'http://127.0.0.1:8766/*',
-        'http://127.0.0.1:8767/*',
-        'http://127.0.0.1:8768/*',
-        'http://127.0.0.1:8769/*'
+        'http://127.0.0.1:8775/*',
+        'http://127.0.0.1:8776/*',
+        'http://127.0.0.1:8777/*',
+        'http://127.0.0.1:8778/*',
+        'http://127.0.0.1:8779/*'
       ])
     );
   });

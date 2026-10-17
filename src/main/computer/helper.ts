@@ -93,6 +93,9 @@ public static class Clf {
   [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desktop);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr desktop);
   [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
 
   public struct POINT { public int X, Y; }
@@ -513,12 +516,45 @@ public static class Clf {
     return outW + "," + outH;
   }
 
-  public static string Capture(int x, int y, int w, int h, int maxW, string file) {
+  static string CaptureDirect(int x, int y, int w, int h, int maxW, string file) {
     using (Bitmap shot = new Bitmap(w, h))
     using (Graphics g = Graphics.FromImage(shot)) {
       g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
       return SavePng(shot, maxW, file);
     }
+  }
+
+  public static string Capture(int x, int y, int w, int h, int maxW, string file) {
+    const uint DESKTOP_READOBJECTS = 0x0001;
+    IntPtr inputDesktop = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+    if (inputDesktop == IntPtr.Zero) {
+      int error = Marshal.GetLastWin32Error();
+      throw new InvalidOperationException("CAPTURE_FAILED: cannot open the interactive input desktop: " + new System.ComponentModel.Win32Exception(error).Message);
+    }
+    string result = null;
+    Exception failure = null;
+    try {
+      var worker = new System.Threading.Thread(delegate() {
+        try {
+          if (!SetThreadDesktop(inputDesktop)) {
+            int error = Marshal.GetLastWin32Error();
+            throw new System.ComponentModel.Win32Exception(error, "SetThreadDesktop failed");
+          }
+          EnsureDpiAware();
+          result = CaptureDirect(x, y, w, h, maxW, file);
+        } catch (Exception error) { failure = error; }
+      });
+      worker.IsBackground = true;
+      worker.Start();
+      worker.Join();
+    } finally {
+      if (!CloseDesktop(inputDesktop) && failure == null) {
+        int error = Marshal.GetLastWin32Error();
+        failure = new System.ComponentModel.Win32Exception(error, "CloseDesktop failed");
+      }
+    }
+    if (failure != null) throw new InvalidOperationException("CAPTURE_FAILED: input desktop capture failed: " + failure.Message, failure);
+    return result;
   }
 
 }

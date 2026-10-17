@@ -68,7 +68,7 @@ it('shows a model saved under its old short label as the model it resolves to (2
     },
     status: { state: 'disconnected', detail: '', publicUrl: null, localUrl: null, handshakeAt: null, lastRequestAt: null, lastToolCallAt: null, health: null, surfaces: [] },
     hasApiKey: false, hasGoalKey: false, resolvedBinary: null, bundledTunnelVersion: null,
-    bridge: { running: true, port: 8765, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
+    bridge: { running: true, port: 8775, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
     update: { current: '2.1.31', latest: null, stage: 'idle', error: null, checkedAt: null }
   };
   const models = [
@@ -148,7 +148,7 @@ it('does not overwrite a focused dirty settings field on an unsolicited state pu
     hasGoalKey: false,
     resolvedBinary: null,
     bundledTunnelVersion: null,
-    bridge: { running: true, port: 8765, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
+    bridge: { running: true, port: 8775, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
     update: { current: '2.0.2', latest: null, stage: 'idle', error: null, checkedAt: null }
   };
   const ok = (data: any) => Promise.resolve({ ok: true, data });
@@ -329,7 +329,7 @@ it('serializes settings intent so rapid toggles and later UI changes cannot undo
     hasGoalKey: false,
     resolvedBinary: null,
     bundledTunnelVersion: null,
-    bridge: { running: true, port: 8765, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
+    bridge: { running: true, port: 8775, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
     update: { current: '2.0.2', latest: null, stage: 'idle', error: null, checkedAt: null }
   });
   let current = appState(baseConfig);
@@ -488,7 +488,7 @@ async function mountChat(
     hasGoalKey: false,
     resolvedBinary: null,
     bundledTunnelVersion: null,
-    bridge: { running: true, port: 8765, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
+    bridge: { running: true, port: 8775, paired: false, present: false, lastSeenAt: null, extensionVersion: null },
     update: { current: '2.0.2', latest: null, stage: 'idle', error: null, checkedAt: null },
     ...overrides
   };
@@ -1048,7 +1048,7 @@ it('keeps global connection controls in a compact sidebar popover', async () => 
       available: true, localUrl: 'http://127.0.0.1:1234', publicUrl: null, tools: ['read'], state: 'live',
       detail: '', lastRequestAt: now - 3_000, lastToolCallAt: now - 2_000 }]
   };
-  connected.bridge = { running: true, port: 8765, paired: true, present: true,
+  connected.bridge = { running: true, port: 8775, paired: true, present: true,
     lastSeenAt: now - 1_000, extensionVersion: '2.1.13' };
   mounted.push(connected);
 
@@ -1342,9 +1342,9 @@ it('saves a custom deployment id and returns to the known OpenRouter model', asy
 it('offers all six bridge ports, saves numbers, and distinguishes saved choice from the override listener', async () => {
   const mounted = await mountChat(); const w = mounted.window;
   const select = w.document.getElementById('browserBridgePort') as HTMLSelectElement;
-  expect([...select.options].map(option => option.value)).toEqual(['auto', '8765', '8766', '8767', '8768', '8769']);
+  expect([...select.options].map(option => option.value)).toEqual(['auto', '8775', '8776', '8777', '8778', '8779']);
   expect(select.value).toBe('auto');
-  for (const value of ['8765', '8766', '8767', '8768', '8769', 'auto']) {
+  for (const value of ['8775', '8776', '8777', '8778', '8779', 'auto']) {
     select.value = value; select.dispatchEvent(new w.Event('change', { bubbles: true }));
     await settle();
     expect(mounted.calls.at(-1).ui.browserBridgePort).toBe(value === 'auto' ? 'auto' : Number(value));
@@ -1355,11 +1355,11 @@ it('offers all six bridge ports, saves numbers, and distinguishes saved choice f
 });
 
 it('shows startup bind errors in the existing Setup status and clears them after recovery', async () => {
-  const mounted = await mountChat({ bridge: { running: false, error: 'port 8767: EADDRINUSE' } });
+  const mounted = await mountChat({ bridge: { running: false, error: 'port 8777: EADDRINUSE' } });
   const status = mounted.window.document.getElementById('bridgeState')!;
-  expect(status.textContent).toContain('Browser bridge could not start: port 8767: EADDRINUSE');
-  mounted.push({ ...mounted.state, bridge: { running: true, port: 8768, paired: false, present: false, error: null } });
-  expect(status.textContent).toContain('8768'); expect(status.textContent).not.toContain('EADDRINUSE');
+  expect(status.textContent).toContain('Browser bridge could not start: port 8777: EADDRINUSE');
+  mounted.push({ ...mounted.state, bridge: { running: true, port: 8778, paired: false, present: false, error: null } });
+  expect(status.textContent).toContain('8778'); expect(status.textContent).not.toContain('EADDRINUSE');
 });
 
 it('restores a rejected focused port and prevents an unrelated queued save from retrying it', async () => {
@@ -1373,11 +1373,11 @@ it('restores a rejected focused port and prevents an unrelated queued save from 
       config: { ...mounted.state.config, ...patch, ui: { ...patch.ui, browserBridgePort } } } });
   } });
   const w = mounted.window; const select = w.document.getElementById('browserBridgePort') as HTMLSelectElement;
-  select.focus(); select.value = '8767'; select.dispatchEvent(new w.Event('change', { bubbles: true }));
+  select.focus(); select.value = '8777'; select.dispatchEvent(new w.Event('change', { bubbles: true }));
   await settle();
   const background = w.document.getElementById('backgroundChats') as HTMLInputElement;
   background.checked = true; background.dispatchEvent(new w.Event('change', { bubbles: true }));
-  release({ ok: false, error: 'Port 8767: EADDRINUSE' });
+  release({ ok: false, error: 'Port 8777: EADDRINUSE' });
   await vi.waitFor(() => expect(calls).toHaveLength(2)); await settle();
   expect(calls[1].patch.ui.browserBridgePort).toBe(calls[1].base.ui.browserBridgePort);
   expect(select.value).toBe('auto'); expect(background.checked).toBe(true);
@@ -2353,7 +2353,7 @@ it('always requires the live browser because recording is an invariant', async (
     },
     // The token survived, but this process has not heard from the extension. This is the
     // disabled/uninstalled-extension-after-app-restart repro.
-    bridge: { running: true, port: 8765, paired: true, present: false, lastSeenAt: null, extensionVersion: null },
+    bridge: { running: true, port: 8775, paired: true, present: false, lastSeenAt: null, extensionVersion: null },
     update: { current: '2.0.2', latest: null, stage: 'idle', error: null, checkedAt: null }
   });
   const doc = mounted.window.document;
@@ -2367,7 +2367,7 @@ it('always requires the live browser because recording is an invariant', async (
   const live = structuredClone(mounted.state) as any;
   live.hasApiKey = true;
   live.status = (mounted.state as any).status;
-  live.bridge = { running: true, port: 8765, paired: true, present: true, lastSeenAt: Date.now(), externalExtension: { present: true, version: live.update.current, lastSeenAt: Date.now(), signedIn: true } };
+  live.bridge = { running: true, port: 8775, paired: true, present: true, lastSeenAt: Date.now(), externalExtension: { present: true, version: live.update.current, lastSeenAt: Date.now(), signedIn: true } };
   mounted.push(live);
   doc.getElementById('browserContinue')!.click();
   expect(browserStep.classList.contains('is-done')).toBe(true);
@@ -2399,7 +2399,7 @@ it('always requires the live browser because recording is an invariant', async (
  */
 it('says nothing about being current until the check has actually answered', async () => {
   const mounted = await mountChat({
-    bridge: { running: true, port: 8765, paired: true, present: true, lastSeenAt: Date.now(), extensionVersion: '2.0.2' }
+    bridge: { running: true, port: 8775, paired: true, present: true, lastSeenAt: Date.now(), extensionVersion: '2.0.2' }
   });
   const doc = mounted.window.document;
   const line = doc.getElementById('updateLine')!;
@@ -2480,7 +2480,7 @@ it('reports a staged update in the Activity line and the header bar', async () =
 it('asks for an extension reload only when the extension is older than this app', async () => {
   const mounted = await mountChat({
     bridge: {
-      running: true, port: 8765, paired: true, present: true, lastSeenAt: Date.now(), extensionVersion: '2.0.1'
+      running: true, port: 8775, paired: true, present: true, lastSeenAt: Date.now(), extensionVersion: '2.0.1'
     }
   });
   const doc = mounted.window.document;

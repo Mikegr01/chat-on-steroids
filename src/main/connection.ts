@@ -41,6 +41,18 @@ const optionalTunnels = new Map<OptionalSurface, {
 const optionalSurfaces: OptionalSurface[] = ['desktop', 'plugins'];
 const optionalTunnelId = (settings: TunnelSettings, id: OptionalSurface): string =>
   (id === 'desktop' ? settings.desktopTunnelId : settings.pluginsTunnelId) ?? '';
+
+/** Returns the live owner of an OpenAI Secure Tunnel ID, without ever logging the ID itself. */
+function tunnelIdOwner(id: OptionalSurface, tunnelId: string, settings: TunnelSettings): SurfaceId | null {
+  const candidate = tunnelId.trim();
+  if (!candidate) return null;
+  if ((settings.tunnelId ?? '').trim() === candidate) return 'core';
+  for (const other of optionalSurfaces) {
+    if (other === id) continue;
+    if (optionalTunnels.get(other)?.tunnelId.trim() === candidate) return other;
+  }
+  return null;
+}
 /**
  * Says so when two connectors are configured on one Secure Tunnel ID.
  *
@@ -55,9 +67,8 @@ const optionalTunnelId = (settings: TunnelSettings, id: OptionalSurface): string
  * restarting the app, refreshing the connectors and using fresh chats all left it in place — so
  * three people reached this the long way before anybody suspected the configuration.
  *
- * Only a warning: the IDs are the user's to choose, a tunnel they deliberately share is their
- * business, and refusing to connect over it would be worse than a 50% failure they can now read
- * the reason for. Ids are never logged.
+ * The warning explains configuration intent without exposing an ID. Optional publication then
+ * fails closed when a live owner already holds that ID, while the valid owner stays untouched.
  */
 function warnOnSharedTunnelIds(settings: TunnelSettings): void {
   const named: Array<[SurfaceId, string]> = [
@@ -518,6 +529,14 @@ async function startOptionalTunnel(
       state: 'off',
       detail: 'Not published yet. Create a separate Secure Tunnel for it and paste its tunnel id in Settings.'
     });
+    return;
+  }
+  const owner = tunnelIdOwner(id, tunnelId, settings);
+  if (owner) {
+    const ownerName = owner === 'core' ? 'Core' : owner === 'desktop' ? 'Desktop' : 'Plugins';
+    const detail = `This Secure Tunnel ID is already in use by the ${ownerName} connector. Give each connector its own tunnel ID.`;
+    logWarn(`${id} connector not published: ${detail}`);
+    updateSurface(id, { state: 'error', detail, publicUrl: null });
     return;
   }
 
