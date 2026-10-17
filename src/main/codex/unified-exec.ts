@@ -1032,7 +1032,17 @@ export class UnifiedExecProcessManager {
     let exitCode: number | null;
     // Early leader exit does not prove tree retirement either. Join the shared
     // operation before refreshing or publishing any initial result.
-    if (entry.retirement) await entry.retirement;
+    if (entry.retirement) {
+      try {
+        await entry.retirement;
+      } catch (error) {
+        // The initial exec response no longer owns this row once its retirement failure has been
+        // returned to the caller. Leaving the guard set here makes a later explicit cleanup retry
+        // succeed natively but refuse to discard the row, leaking execution custody indefinitely.
+        if (this.processes.get(request.processId) === entry) entry.initialExecCommandActive = false;
+        throw error;
+      }
+    }
     if (this.processes.get(request.processId) !== entry) throw UnifiedExecError.unknownProcessId(request.processId);
     const status = this.refreshProcessState(request.processId);
     if (status.kind === 'alive') {

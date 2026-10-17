@@ -285,3 +285,26 @@ it.runIf(process.platform === 'win32')('CASE 8: id release and output acknowledg
   manager.releaseProcessId(h.id);
   expect(execOwner(h.id)).toBeNull();
 });
+
+it.runIf(process.platform === 'win32')('explicit retry after failed retirement releases row and custody', async () => {
+  const h = await pendingInitialExec();
+  const first = h.interrupt().then(value => ({ value }), error => ({ error }));
+  await h.interruptEntered.promise;
+  h.exit();
+  await h.publicationWaiting();
+  h.killer.emit('close', 1);
+  expect(await first).toHaveProperty('error');
+  expect(await h.initialOutcome).toHaveProperty('error');
+  expect(h.entry.retirementPending).toBe(true);
+  expect(execOwner(h.id)).toBe(h.owner);
+
+  const retryKiller = Object.assign(new EventEmitter(), { kill: vi.fn() });
+  native.kill.mockImplementationOnce(() => {
+    queueMicrotask(() => retryKiller.emit('close', 0));
+    return retryKiller;
+  });
+  expect(await manager.terminateProcess(h.id)).toBe(true);
+  expect(native.kill).toHaveBeenCalledTimes(2);
+  expect(manager.listProcesses()).not.toContainEqual(expect.objectContaining({ processId: h.id }));
+  expect(execOwner(h.id)).toBeNull();
+});
