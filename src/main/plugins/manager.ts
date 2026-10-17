@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ToolSchema } from '@modelcontextprotocol/core';
-import { Client, ProtocolError, StreamableHTTPClientTransport, UnauthorizedError, type Tool, type CallToolResult } from '@modelcontextprotocol/client';
+import { ToolSchema, ReadResourceResultSchema } from '@modelcontextprotocol/core';
+import { Client, ProtocolError, ProtocolErrorCode, ResourceNotFoundError, StreamableHTTPClientTransport, UnauthorizedError, type Tool, type CallToolResult, type ReadResourceResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getMcpConfigForManifest, vAny } from '@anthropic-ai/mcpb/browser';
 import { getSecret, setSecret, clearSecret } from '../secrets.js';
@@ -828,6 +828,64 @@ export class PluginManager {
     this.changed();
   }
   tools(): Tool[] { return [...this.exposure().tools]; }
+  /** The exposure projection is the sole URI map; only ready connections can serve it. */
+  private resourceOwner(uri: string): string | undefined {
+    if (this.closing || this.redact(uri) !== uri) return;
+    const owner = this.exposure().resourceOwners.get(uri);
+    return this.records.some(row => row.id === owner && row.enabled && row.status === 'ready' && this.live.has(row.id)) ? owner : undefined;
+  }
+  resources(): { uri: string; name: string }[] {
+    return [...this.exposure().resourceOwners.keys()].filter(uri => this.resourceOwner(uri))
+      .sort().map(uri => ({ uri, name: uri }));
+  }
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    const unavailable = () => new ProtocolError(ProtocolErrorCode.InternalError, 'PLUGIN_RESOURCE_UNAVAILABLE: Resource owner or catalog changed.');
+    const owner = this.resourceOwner(uri);
+    if (this.exposure().resourceConflicts.has(uri))
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'PLUGIN_RESOURCE_COLLISION: Multiple installations claim this URI.');
+    if (!owner) throw new ResourceNotFoundError(String(this.redact(uri)));
+    const acquired = await this.serial(owner, async () => {
+      if (this.resourceOwner(uri) !== owner) throw unavailable();
+      const row = this.row(owner), live = this.live.get(owner)!;
+      live.users++;
+      return { row, live, catalog: row.catalog };
+    });
+    const { row, live, catalog } = acquired;
+    const current = () => this.live.get(owner) === live && row.catalog === catalog && this.resourceOwner(uri) === owner;
+    try {
+      // The SDK caches reads by URI; lifecycle authority must be checked against a
+      // fresh response from this exact client, never a body from an earlier catalog.
+      if (!current()) throw unavailable();
+      const response = await live.client.readResource({ uri }, { timeout: 120000, cacheMode: 'bypass' });
+      if (!current()) throw unavailable();
+      if (Buffer.byteLength(JSON.stringify(response)) > 16 * 1024 * 1024)
+        throw new Error('Plugin resource exceeds 16 MiB');
+      const parsed = ReadResourceResultSchema.safeParse(response);
+      if (!parsed.success || !parsed.data.contents.length || parsed.data.contents.some(content => content.uri !== uri))
+        throw new Error('Invalid plugin resource contents');
+      const { contents, ...metadata } = parsed.data;
+      return {
+        ...this.redact(metadata) as Omit<ReadResourceResult, 'contents'>,
+        // MIME values and blobs are protocol fields; URI equality/admission was
+        // already checked. Redact authored text and metadata as for tool results.
+        contents: contents.map(content => ({
+          ...content,
+          ...(content._meta === undefined ? {} : { _meta: this.redact(content._meta) as Record<string, unknown> }),
+          ...('text' in content ? { text: String(this.redact(content.text)) } : {}),
+        })),
+      };
+    } catch (error) {
+      if (!current()) throw unavailable();
+      // Preserve upstream MCP error codes, but never publish arbitrary private data.
+      if (error instanceof ProtocolError)
+        throw new ProtocolError(error.code, String(this.redact(error.message)).slice(0, 600));
+      const needsAuth = error instanceof PluginNeedsAuth || error instanceof UnauthorizedError;
+      row.status = needsAuth ? 'needs-auth' : 'error';
+      row.error = needsAuth ? 'Sign in again to reconnect this plugin.' : 'Resource read failed. Restart after checking its application.';
+      this.changed();
+      throw new ProtocolError(ProtocolErrorCode.InternalError, 'PLUGIN_RESOURCE_FAILED: The server returned invalid resource contents or disconnected.');
+    } finally { this.release(row, live); }
+  }
   async call(name: string, args: Record<string, unknown> = {},
     onOutcome?: (outcome: 'tool_rejected' | 'tool_execution_error') => void): Promise<CallToolResult> {
     return this.invoke(name, args, onOutcome);
