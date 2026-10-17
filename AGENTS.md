@@ -4254,6 +4254,15 @@ Refresh observations allow the registrar's one additional code-mode tool. Legacy
 snapshots (plus optional code mode) can enroll only as an exact declaration subset of the
 current Plugins publication; refresh completion still requires the complete current catalog.
 
+UI resources use the same exposure authority: tool metadata `openai/outputTemplate` or nested
+`ui.resourceUri` admits exact bounded `ui://` identifiers. Retained catalogs reserve URI
+collisions even while disabled; only a uniquely admitted tool on a ready live client can
+serve one. Plugins alone exposes dynamic `resources/list` and `resources/read`, with no
+arbitrary filesystem/network fetch. Reads bypass SDK caches, validate resource contents and
+the 16 MiB bound, redact authored values while preserving opaque blobs, and recheck the exact
+client/catalog after awaits. Read-only refuses reads. Resource host requests do not execute
+tools or consume tool inbox/recording custody.
+
 Remote OAuth uses endpoint-scoped encrypted credentials and SDK registration/PKCE/refresh.
 Only explicit sign-in opens the browser/loopback authorization flow; ordinary reconnect does
 not auto-register or open login pages. Local status/probe, installed, enabled, authenticated,

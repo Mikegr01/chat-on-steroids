@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import { ProtocolError, ProtocolErrorCode, type McpServer } from '@modelcontextprotocol/server';
 import type { PluginToolSchema } from '../../shared/plugin-refresh.js';
 import { pluginManager } from '../plugins/manager.js';
 import { getConfig } from '../config.js';
@@ -37,6 +37,19 @@ export function registerPluginTools(server: McpServer, setupProfileId: string | 
     { surface: 'plugins' });
   if (codeMode) tools.push({ name: 'exec', title: declaration.title, description: declaration.description,
     inputSchema: toolSchemaJson(codeModeSchema) as (typeof tools)[number]['inputSchema'], annotations: declaration.annotations });
+  // Host resource requests project live plugin authority; they do not execute tools
+  // or consume model-tool inbox/recording custody. No per-request URI registry.
+  server.server.registerCapabilities({ resources: {} });
+  server.server.setRequestHandler('resources/list', async () => ({ resources: getConfig().readOnly ? [] : pluginManager.resources() }));
+  server.server.setRequestHandler('resources/read', async request => {
+    const assertEnabled = () => {
+      if (getConfig().readOnly) throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'TOOL_DISABLED: external plugin resources are unavailable in read-only mode.');
+    };
+    assertEnabled();
+    const result = await pluginManager.readResource(request.params.uri);
+    assertEnabled();
+    return result;
+  });
   server.server.setRequestHandler('tools/list', async () => ({ tools }));
   server.server.setRequestHandler('tools/call', async (request, context) => {
     const tool = tools.find(item => item.name === request.params.name);

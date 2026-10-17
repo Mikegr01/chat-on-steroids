@@ -20,11 +20,28 @@ export interface PluginExposureSource {
   disabledTools: readonly string[];
 }
 
+/** UI identifiers are opaque routing keys, never file paths or fetch targets. */
+function advertisedUiUris(tool: Tool): string[] {
+  const meta = tool._meta;
+  const ui = meta?.ui;
+  const candidates = [meta?.['openai/outputTemplate'],
+    ui && typeof ui === 'object' && !Array.isArray(ui) ? (ui as Record<string, unknown>).resourceUri : undefined];
+  return [...new Set(candidates.filter((value): value is string => {
+    if (typeof value !== 'string' || value.length > 8192 || !/^ui:\/\/[^\s\\]+$/.test(value)) return false;
+    try {
+      const uri = new URL(value);
+      return !!uri.hostname && !uri.username && !uri.password && uri.href === value;
+    } catch { return false; }
+  }))];
+}
+
 /** One projection for discovery, UI and call ownership. Upstream names never change. */
 export function pluginExposure(sources: readonly PluginExposureSource[]): {
   tools: Tool[];
   owners: Map<string, string>;
   issues: Map<string, Map<string, string>>;
+  resourceOwners: Map<string, string>;
+  resourceConflicts: Set<string>;
 } {
   const claims = new Map<string, PluginExposureSource[]>();
   const issues = new Map<string, Map<string, string>>();
@@ -65,5 +82,18 @@ export function pluginExposure(sources: readonly PluginExposureSource[]): {
       bytes += size;
     }
   }
-  return { tools, owners, issues };
+  // Retained declarations reserve URI claims just as they reserve tool names.
+  // Disable/error cannot silently retarget a cached URI to another installation.
+  const resourceClaims = new Map<string, Set<string>>();
+  for (const source of sources) for (const tool of source.tools) for (const uri of advertisedUiUris(tool)) {
+    const claimants = resourceClaims.get(uri) ?? new Set<string>();
+    claimants.add(source.id);
+    resourceClaims.set(uri, claimants);
+  }
+  const resourceConflicts = new Set([...resourceClaims].filter(([, claimants]) => claimants.size > 1).map(([uri]) => uri));
+  const resourceOwners = new Map<string, string>();
+  for (const tool of tools) for (const uri of advertisedUiUris(tool)) {
+    if (!resourceConflicts.has(uri)) resourceOwners.set(uri, owners.get(tool.name)!);
+  }
+  return { tools, owners, issues, resourceOwners, resourceConflicts };
 }
