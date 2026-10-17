@@ -9,6 +9,27 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '../..');
 
+/** Admit a disposable real-app profile before fixtures write state or load the app bootstrap. */
+function validationUserData(directory) {
+  const { buildSync } = require('esbuild');
+  const { app } = require('electron');
+  const outdir = path.join(root, '.tmp/fixture-defaults');
+  fs.mkdirSync(outdir, { recursive: true });
+  const outfile = path.join(outdir, `identity-${process.pid}.cjs`);
+  buildSync({
+    stdin: { contents: "export { configureAppIdentity } from './src/main/app-identity.ts';", resolveDir: root },
+    outfile, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'error'
+  });
+  try {
+    // The built app later reads this same explicit choice; never persist it in config.
+    process.argv.push(`--validation-user-data=${directory}`);
+    require(outfile).configureAppIdentity();
+    return app.getPath('userData');
+  } finally {
+    fs.rmSync(outfile, { force: true });
+  }
+}
+
 function defaultConfig() {
   const { buildSync } = require('esbuild');
   const outdir = path.join(root, '.tmp/fixture-defaults');
@@ -49,4 +70,4 @@ const fixtureConfig = patch => fixtureMerge(fixtureDefaults, patch);`.replace('f
  */
 const BENIGN_RENDERER_ERRORS = ['ResizeObserver loop completed with undelivered notifications.'];
 
-module.exports = { defaultConfig, merge, fixtureConfigSource, BENIGN_RENDERER_ERRORS };
+module.exports = { defaultConfig, merge, fixtureConfigSource, BENIGN_RENDERER_ERRORS, validationUserData };

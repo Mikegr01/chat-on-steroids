@@ -290,10 +290,25 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 **Intent:** open a usable local workspace, restore accepted work consistently, and exit without
 leaving an invisible process, tool, writer or installer competing with the next launch.
 
-The single-instance lock must be won before touching shared userData. The losing process marks
+The single-instance lock must be won before touching shared production userData. Disposable
+validation-profile admission is the narrow pre-lock exception described below. The losing process marks
 itself quitting immediately; `app.quit()` alone does not stop module evaluation. Activation from
 second-instance/tray/Dock is gated until restore, CSP, permissions and IPC are ready. Once quit
 begins, no delayed startup callback may re-enable window creation.
+
+`main/app-identity.ts` finalizes the Custom product identity before that lock. Only explicit
+`--validation-user-data=<absolute-normalized-directory>` selects disposable userData; it never
+changes product/AUMID/bridge identity or a saved preference. Existing ancestors resolve through
+symlinks/junctions; both canonical product profiles are protected in both ancestor directions.
+Existing targets require the exact product-bound version-1 `.cos-validation-profile.json` marker;
+empty unowned directories are refused. New targets are exclusively created, owned crash residue
+is reusable, and actual write access is required. Windows accepts unambiguous local drive paths
+only. Invalid admission aborts startup; no production fallback or profile deletion exists.
+An already-finalized app target cannot switch profiles. Real-app pet verifiers use
+`scripts/fixtures/app-defaults.cjs::validationUserData` before writing fixtures/loading bootstrap.
+For dev use `npm run dev -- -- --validation-user-data=<path>`; packaged executables accept the
+inline option directly. Choose a missing disposable child or an already validation-owned profile.
+Tests: `isolated-runtime-validation`, `identity-isolation` and `window-lifecycle`.
 
 Startup initializes config/secrets/session/durable paths, restores the saved model catalog and
 plugin manager, loads Goal ledgers, exact correlations and blocked/trusted chat policy, then retired workers

@@ -15,8 +15,8 @@ const checkFocus = process.argv.includes('--check-focus');
 const externalKeyboard = process.argv.includes('--external-keyboard');
 const runFile = promisify(execFile);
 const root = path.resolve(__dirname, '..');
-const { defaultConfig, merge } = require('./fixtures/app-defaults.cjs');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-pet-toggle-'));
+const { defaultConfig, merge, validationUserData } = require('./fixtures/app-defaults.cjs');
+const userData = validationUserData(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cos-pet-toggle-')), 'profile'));
 fs.mkdirSync(path.join(userData, 'state'));
 fs.writeFileSync(path.join(userData, 'state/pet-library.json'), JSON.stringify({ version: 1, enabled: [], favorites: [] }));
 // Start from the app's own defaults so the config is valid and not reset on load.
@@ -24,8 +24,6 @@ fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify(merge(defaul
   readOnly: true, ui: { minimizeToTray: false, autoConnect: false },
   multiAgent: { enabled: false, recoverAgentTabs: false }, goal: { enabled: false }
 })));
-app.setName('CoS Pet Toggle Probe');
-app.setPath('userData', userData);
 app.setAppPath(root);
 process.env.CLF_BRIDGE_PORTS = '0';
 let owner, overlay, ignored = true, decodes = 0;
