@@ -357,3 +357,26 @@ it('releases concurrent quota reservations and file handles after abort', async 
   await fs.rm(sessionDir, { recursive: true, force: false });
   expect(await fs.stat(sessionDir).then(() => true, () => false)).toBe(false);
 });
+
+it('aborts pre-created artifact custody when exec admission rejects before spawn', async () => {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-context-admission-'));
+  const sessionsRoot = path.join(dir, 'sessions');
+  const sessionId = 'session-alpha';
+  await fs.mkdir(path.join(sessionsRoot, sessionId), { recursive: true });
+  const store = new ContextArtifactStore(sessionsRoot);
+  const writer = await store.begin({ sessionId, operationId: 'call-capacity', kind: 'exec-output' });
+  const manager = new UnifiedExecProcessManager(30_000);
+  const ids = Array.from({ length: 65 }, () => manager.allocateProcessId());
+  try {
+    await expect(manager.execCommand({
+      command: [process.execPath, '-e', "process.stdout.write('must-not-run')"],
+      shellType: 'bash', hookCommand: 'capacity rejection regression', processId: ids[0]!,
+      yieldTimeMs: 30_000, maxOutputTokens: 10_000, truncationPolicy: { kind: 'tokens', tokens: 10_000 },
+      cwd: process.cwd(), displayCwd: process.cwd(), env: applyUnifiedExecEnv(process.env), tty: false,
+      contextArtifactWriter: writer
+    })).rejects.toThrow(/too many retained terminal sessions/i);
+    expect(() => writer.write(Buffer.from('late'))).toThrowError(/writer is closed/i);
+  } finally {
+    await manager.terminateAllProcesses();
+  }
+});

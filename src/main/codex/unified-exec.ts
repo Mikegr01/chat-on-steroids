@@ -965,6 +965,7 @@ export class UnifiedExecProcessManager {
     try {
       this.ensureProcessCapacity(request.processId);
     } catch (error) {
+      await request.contextArtifactWriter?.abort().catch(() => undefined);
       releaseReservation();
       throw error;
     }
