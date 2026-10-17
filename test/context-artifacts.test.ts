@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   ContextArtifactError,
   ContextArtifactStore,
@@ -82,6 +82,33 @@ it('fences refs by session, hides creating artifacts, and fails closed on tamper
     'tamper'
   );
   await expect(store.read('session-alpha', descriptor.ref, 0, 64)).rejects.toMatchObject({ code: 'CORRUPT' });
+});
+
+it('fails closed instead of returning bytes from a raw path swapped after verification', async () => {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-context-swap-'));
+  const sessionsRoot = path.join(dir, 'sessions');
+  const sessionId = 'session-alpha';
+  await fs.mkdir(path.join(sessionsRoot, sessionId), { recursive: true });
+  const store = new ContextArtifactStore(sessionsRoot);
+  const trusted = Buffer.from('trusted immutable context bytes', 'utf8');
+  const malicious = Buffer.from('malicious swapped context bytes', 'utf8');
+  expect(malicious.length).toBe(trusted.length);
+  const descriptor = await writeArtifact(store, sessionId, 'call-swap', trusted);
+  const rawPath = path.join(sessionsRoot, sessionId, 'context-artifacts', `${descriptor.artifactId}.bin`);
+  const realOpen = fs.open.bind(fs);
+  let swapped = false;
+  const openSpy = vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+    if (!swapped && path.resolve(String(args[0])) === path.resolve(rawPath)) {
+      swapped = true;
+      await fs.writeFile(rawPath, malicious);
+    }
+    return realOpen(...args);
+  });
+  try {
+    await expect(store.read(sessionId, descriptor.ref, 0, trusted.length)).rejects.toMatchObject({ code: 'CORRUPT' });
+  } finally {
+    openSpy.mockRestore();
+  }
 });
 
 it('accounts concurrent active writers against one shared session quota', async () => {

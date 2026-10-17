@@ -5,7 +5,7 @@
  * caller's owning session; no caller-provided filesystem path ever reaches this subsystem.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { constants as fsConstants, createReadStream, promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
 export const MAX_CONTEXT_ARTIFACT_BYTES = 64 * 1024 * 1024;
@@ -307,22 +307,33 @@ export class ContextArtifactStore {
     const artifactId = artifactIdFromRef(ref);
     const manifest = await this.manifest(sessionId, artifactId);
     const raw = this.rawPath(sessionId, artifactId);
-    const verified = await this.verify(raw, manifest);
-    const end = Math.min(verified.size, offset + length);
-    if (offset > verified.size) throw new ContextArtifactError('INVALID_REQUEST', 'Read offset is beyond the artifact');
+    if (offset > manifest.rawBytes) throw new ContextArtifactError('INVALID_REQUEST', 'Read offset is beyond the artifact');
+    const end = Math.min(manifest.rawBytes, offset + length);
     const bytes = Buffer.alloc(Math.max(0, end - offset));
-    if (bytes.length > 0) {
-      const handle = await fs.open(raw, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-      try {
-        let cursor = 0;
-        while (cursor < bytes.length) {
-          const result = await handle.read(bytes, cursor, bytes.length - cursor, offset + cursor);
-          if (result.bytesRead === 0) throw new ContextArtifactError('CORRUPT', 'Context artifact changed while reading');
-          cursor += result.bytesRead;
+    const handle = await this.openRawHandle(raw, manifest);
+    try {
+      const hash = createHash('sha256');
+      const chunk = Buffer.alloc(IO_CHUNK_BYTES);
+      let total = 0;
+      while (true) {
+        const result = await handle.read(chunk, 0, chunk.length, total);
+        if (result.bytesRead === 0) break;
+        const view = chunk.subarray(0, result.bytesRead);
+        hash.update(view);
+        const chunkStart = total;
+        const chunkEnd = total + result.bytesRead;
+        const copyStart = Math.max(offset, chunkStart);
+        const copyEnd = Math.min(end, chunkEnd);
+        if (copyEnd > copyStart) {
+          view.copy(bytes, copyStart - offset, copyStart - chunkStart, copyEnd - chunkStart);
         }
-      } finally { await handle.close(); }
-    }
-    return { ref, offset, end, total: verified.size, sha256: manifest.sha256, bytes };
+        total = chunkEnd;
+      }
+      if (total !== manifest.rawBytes || hash.digest('hex') !== manifest.sha256) {
+        throw new ContextArtifactError('CORRUPT', 'Context artifact digest or byte count does not match committed metadata');
+      }
+      return { ref, offset, end, total, sha256: manifest.sha256, bytes };
+    } finally { await handle.close(); }
   }
 
   async search(
@@ -352,48 +363,46 @@ export class ContextArtifactStore {
     const artifactId = artifactIdFromRef(ref);
     const manifest = await this.manifest(sessionId, artifactId);
     const raw = this.rawPath(sessionId, artifactId);
-    let stat;
-    try { stat = await fs.lstat(raw); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ContextArtifactError('NOT_AVAILABLE', 'Context artifact bytes are missing');
-      throw error;
-    }
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== manifest.rawBytes) {
-      throw new ContextArtifactError('CORRUPT', 'Context artifact file shape or byte count does not match committed metadata');
-    }
+    const handle = await this.openRawHandle(raw, manifest);
     const positions: number[] = [];
     const hash = createHash('sha256');
     let total = 0;
     let carry = Buffer.alloc(0);
-    for await (const value of createReadStream(raw, { highWaterMark: IO_CHUNK_BYTES })) {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      hash.update(chunk);
-      const combined = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
-      const base = total - carry.length;
-      let from = 0;
-      while (positions.length < maxMatches) {
-        const found = combined.indexOf(needle, from);
-        if (found < 0) break;
-        const absolute = base + found;
-        if (positions.length === 0 || absolute > positions[positions.length - 1]!) positions.push(absolute);
-        from = found + Math.max(1, needle.length);
+    try {
+      const chunk = Buffer.alloc(IO_CHUNK_BYTES);
+      while (true) {
+        const result = await handle.read(chunk, 0, chunk.length, total);
+        if (result.bytesRead === 0) break;
+        const view = Buffer.from(chunk.subarray(0, result.bytesRead));
+        hash.update(view);
+        const combined = carry.length === 0 ? view : Buffer.concat([carry, view]);
+        const base = total - carry.length;
+        let from = 0;
+        while (positions.length < maxMatches) {
+          const found = combined.indexOf(needle, from);
+          if (found < 0) break;
+          const absolute = base + found;
+          if (positions.length === 0 || absolute > positions[positions.length - 1]!) positions.push(absolute);
+          from = found + Math.max(1, needle.length);
+        }
+        total += result.bytesRead;
+        const overlap = Math.min(Math.max(0, needle.length - 1), combined.length);
+        carry = overlap === 0 ? Buffer.alloc(0) : Buffer.from(combined.subarray(combined.length - overlap));
       }
-      total += chunk.length;
-      const overlap = Math.min(Math.max(0, needle.length - 1), combined.length);
-      carry = overlap === 0 ? Buffer.alloc(0) : Buffer.from(combined.subarray(combined.length - overlap));
-    }
-    if (total !== manifest.rawBytes || hash.digest('hex') !== manifest.sha256) {
-      throw new ContextArtifactError('CORRUPT', 'Context artifact digest or byte count does not match committed metadata');
-    }
-    const matches: ContextArtifactSearchMatch[] = [];
-    for (const start of positions) {
-      const end = start + needle.length;
-      const contextStart = Math.max(0, start - contextBytes);
-      const contextEnd = Math.min(total, end + contextBytes);
-      const read = await this.readVerifiedRange(raw, contextStart, contextEnd - contextStart);
-      matches.push({ start, end, contextStart, contextEnd, bytes: read, text: roundTripUtf8(read) });
-    }
-    return { ref, query, total, sha256: manifest.sha256, matches };
+      if (total !== manifest.rawBytes || hash.digest('hex') !== manifest.sha256) {
+        throw new ContextArtifactError('CORRUPT', 'Context artifact digest or byte count does not match committed metadata');
+      }
+      const matches: ContextArtifactSearchMatch[] = [];
+      for (const start of positions) {
+        const end = start + needle.length;
+        const contextStart = Math.max(0, start - contextBytes);
+        const contextEnd = Math.min(total, end + contextBytes);
+        const read = await this.readHandleRange(handle, contextStart, contextEnd - contextStart);
+        matches.push({ start, end, contextStart, contextEnd, bytes: read, text: roundTripUtf8(read) });
+      }
+      await this.verifyHandle(handle, manifest);
+      return { ref, query, total, sha256: manifest.sha256, matches };
+    } finally { await handle.close(); }
   }
 
   async sessionDeleting(sessionId: string): Promise<void> {
@@ -610,39 +619,69 @@ export class ContextArtifactStore {
     return parsed;
   }
 
-  private async verify(raw: string, manifest: ContextArtifactManifest): Promise<{ size: number }> {
-    let stat;
-    try { stat = await fs.lstat(raw); }
+  private async openRawHandle(
+    raw: string,
+    manifest: ContextArtifactManifest
+  ): Promise<Awaited<ReturnType<typeof fs.open>>> {
+    let before;
+    try { before = await fs.lstat(raw); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ContextArtifactError('NOT_AVAILABLE', 'Context artifact bytes are missing');
       throw error;
     }
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new ContextArtifactError('CORRUPT', 'Context artifact is not a regular immutable file');
-    const hash = createHash('sha256');
-    let bytes = 0;
-    for await (const value of createReadStream(raw, { highWaterMark: IO_CHUNK_BYTES })) {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      bytes += chunk.length;
-      hash.update(chunk);
+    if (!before.isFile() || before.isSymbolicLink() || before.size !== manifest.rawBytes) {
+      throw new ContextArtifactError('CORRUPT', 'Context artifact file shape or byte count does not match committed metadata');
     }
-    if (bytes !== manifest.rawBytes || bytes !== stat.size || hash.digest('hex') !== manifest.sha256) {
-      throw new ContextArtifactError('CORRUPT', 'Context artifact digest or byte count does not match committed metadata');
+    let handle: Awaited<ReturnType<typeof fs.open>>;
+    try { handle = await fs.open(raw, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ContextArtifactError('NOT_AVAILABLE', 'Context artifact bytes are missing');
+      throw new ContextArtifactError('CORRUPT', 'Context artifact could not be opened as an immutable regular file');
     }
-    return { size: bytes };
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== manifest.rawBytes ||
+          (before.ino !== 0 && opened.ino !== 0 && (before.dev !== opened.dev || before.ino !== opened.ino))) {
+        throw new ContextArtifactError('CORRUPT', 'Context artifact changed while opening');
+      }
+      return handle;
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
   }
 
-  private async readVerifiedRange(raw: string, offset: number, length: number): Promise<Buffer> {
+  private async verifyHandle(
+    handle: Awaited<ReturnType<typeof fs.open>>,
+    manifest: ContextArtifactManifest
+  ): Promise<void> {
+    const hash = createHash('sha256');
+    let bytes = 0;
+    const chunk = Buffer.alloc(IO_CHUNK_BYTES);
+    while (true) {
+      const result = await handle.read(chunk, 0, chunk.length, bytes);
+      if (result.bytesRead === 0) break;
+      hash.update(chunk.subarray(0, result.bytesRead));
+      bytes += result.bytesRead;
+    }
+    if (bytes !== manifest.rawBytes || hash.digest('hex') !== manifest.sha256) {
+      throw new ContextArtifactError('CORRUPT', 'Context artifact digest or byte count does not match committed metadata');
+    }
+  }
+
+  private async readHandleRange(
+    handle: Awaited<ReturnType<typeof fs.open>>,
+    offset: number,
+    length: number
+  ): Promise<Buffer> {
     const buffer = Buffer.alloc(length);
     if (length === 0) return buffer;
-    const handle = await fs.open(raw, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    try {
-      let cursor = 0;
-      while (cursor < length) {
-        const result = await handle.read(buffer, cursor, length - cursor, offset + cursor);
-        if (result.bytesRead === 0) throw new ContextArtifactError('CORRUPT', 'Context artifact changed while reading');
-        cursor += result.bytesRead;
-      }
-      return buffer;
-    } finally { await handle.close(); }
+    let cursor = 0;
+    while (cursor < length) {
+      const result = await handle.read(buffer, cursor, length - cursor, offset + cursor);
+      if (result.bytesRead === 0) throw new ContextArtifactError('CORRUPT', 'Context artifact changed while reading');
+      cursor += result.bytesRead;
+    }
+    return buffer;
   }
 }
