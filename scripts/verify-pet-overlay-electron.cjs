@@ -9,10 +9,11 @@ const assert = require('node:assert/strict');
 const sharp = require('sharp');
 
 const root = path.resolve(__dirname, '..');
-const { defaultConfig, merge } = require('./fixtures/app-defaults.cjs');
+const { defaultConfig, merge, validationUserData } = require('./fixtures/app-defaults.cjs');
 const reuseAt = process.argv.indexOf('--reuse');
 const reusing = reuseAt >= 0;
-const userData = reusing ? path.resolve(process.argv[reuseAt + 1]) : fs.mkdtempSync(path.join(os.tmpdir(), 'cos-pets-render-'));
+const userData = validationUserData(reusing ? path.resolve(process.argv[reuseAt + 1])
+  : path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cos-pets-render-')), 'profile'));
 if (!reusing) {
   fs.mkdirSync(path.join(userData, 'state'));
   fs.writeFileSync(path.join(userData, 'state', 'pet-library.json'), JSON.stringify({
@@ -26,8 +27,6 @@ if (!reusing) {
     goal: { enabled: false }
   })));
 }
-app.setName('CoS Pets Render Probe');
-app.setPath('userData', userData);
 app.setAppPath(root);
 process.env.CLF_BRIDGE_PORTS = '0';
 
