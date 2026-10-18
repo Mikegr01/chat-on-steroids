@@ -13,6 +13,10 @@ files:
   # Native verifier has one real-filesystem resource owner outside ASAR.
   - '!out/native/**/*'
   - package.json
+  # These unexported test suites have no runtime path. Preserve Zod's source exports,
+  # locales and legal files, and KaTeX's tests exposed by its catch-all export.
+  - '!node_modules/zod/src/{v3,v4/classic,v4/core,v4/mini}/tests/**/*'
+  - '!node_modules/@anthropic-ai/mcpb/node_modules/zod/src/{v3,v4/classic,v4/core,v4/mini}/tests/**/*'
   - '!node_modules/@img/sharp-*/**/*'
   - '!node_modules/@img/sharp-libvips-*/**/*'
   - '!node_modules/@koromix/koffi-*/**/*'
